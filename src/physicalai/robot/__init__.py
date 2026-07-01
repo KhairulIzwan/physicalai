@@ -15,6 +15,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
+from physicalai.robot._discovery import available_robots, load_robot  # noqa: PLC2701
 from physicalai.robot.connect import connect
 from physicalai.robot.interface import Robot, RobotObservation
 from physicalai.robot.verify import verify_robot
@@ -27,7 +28,9 @@ if TYPE_CHECKING:
 __all__ = [
     "Robot",
     "RobotObservation",
+    "available_robots",
     "connect",
+    "load_robot",
     "verify_robot",
 ]
 

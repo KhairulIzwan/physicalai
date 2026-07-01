@@ -29,6 +29,7 @@ from typing import TYPE_CHECKING
 
 from jsonargparse import ArgumentParser
 
+from physicalai.cli import robots as robots_cmd
 from physicalai.cli import run as run_cmd
 from physicalai.cli._discovery import discover_subcommands  # noqa: PLC2701
 from physicalai.cli._spec import SubcommandSpec  # noqa: PLC2701
@@ -45,10 +46,16 @@ logger = logging.getLogger(__name__)
 # ``--help`` listing never has to build (or import) a parser.
 _BUILTINS: dict[str, Callable[[], SubcommandSpec]] = {
     "run": run_cmd.register,
+    "robots": robots_cmd.register,
 }
 _BUILTIN_HELP: dict[str, str] = {
     "completion": "Print a shell completion script.",
     "run": run_cmd.HELP,
+    "robots": robots_cmd.HELP,
+}
+_BUILTIN_MODULES: dict[str, ModuleType] = {
+    "run": run_cmd,
+    "robots": robots_cmd,
 }
 _COMPLETION_SHELLS = frozenset({"bash", "zsh", "fish"})
 _HELP_FLAGS = frozenset({"-h", "--help"})
@@ -97,8 +104,8 @@ def _load_subcommand_module(name: str, entry_points: dict[str, EntryPoint]) -> M
     Returns:
         Imported subcommand module when available, otherwise ``None``.
     """
-    if name == "run":
-        return run_cmd
+    if name in _BUILTIN_MODULES:
+        return _BUILTIN_MODULES[name]
 
     try:
         register = entry_points[name].load()

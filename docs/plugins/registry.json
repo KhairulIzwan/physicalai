@@ -1,0 +1,26 @@
+{
+  "schema_version": 1,
+  "robots": [
+    {
+      "name": "so101",
+      "package": "physicalai",
+      "description": "SO-101 6-DOF arm (Feetech servos). Install: pip install physicalai[so101]",
+      "homepage": "https://github.com/openvinotoolkit/physicalai",
+      "official": true
+    },
+    {
+      "name": "widowxai",
+      "package": "physicalai",
+      "description": "Trossen WidowX-AI arm. Install: pip install physicalai[trossen]",
+      "homepage": "https://github.com/openvinotoolkit/physicalai",
+      "official": true
+    },
+    {
+      "name": "bimanual_widowxai",
+      "package": "physicalai",
+      "description": "Trossen bimanual WidowX-AI (dual arm). Install: pip install physicalai[trossen]",
+      "homepage": "https://github.com/openvinotoolkit/physicalai",
+      "official": true
+    }
+  ]
+}
