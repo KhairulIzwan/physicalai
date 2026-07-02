@@ -1,7 +1,7 @@
 # Copyright (C) 2026 Intel Corporation
 # SPDX-License-Identifier: Apache-2.0
 
-"""PolicyRuntime — runs a trained policy on robot hardware."""
+"""Runtime loop implementations for robot control."""
 
 from __future__ import annotations
 
@@ -11,24 +11,31 @@ import uuid
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Protocol, Self, runtime_checkable
 
-import numpy as np
-
 from physicalai.capture.errors import CaptureError
-from physicalai.inference.constants import IMAGES, STATE, TASK
-from physicalai.runtime._action_queue import ChunkedActionQueue  # noqa: PLC2701
 from physicalai.runtime._callback_bus import _CallbackBus  # noqa: PLC2701
+from physicalai.runtime.controller import (
+    PolicyController,
+    SupportsBus,
+    SupportsDrain,
+    SupportsHoldInfo,
+    SupportsStats,
+)
 from physicalai.runtime.events import LifecycleEvent, TickEvent
-from physicalai.runtime.execution import Execution, WorkerDiedError
-from physicalai.runtime.smoothers import LerpSmoother
+from physicalai.runtime.execution import WorkerDiedError
+from physicalai.runtime.tick import Tick
 
 if TYPE_CHECKING:
     from collections.abc import Mapping, Sequence
     from pathlib import Path
 
+    import numpy as np
+
     from physicalai.capture.camera import Camera
     from physicalai.capture.frame import Frame
     from physicalai.inference.model import InferenceModel
     from physicalai.robot.interface import Robot, RobotObservation
+    from physicalai.runtime.controller import Controller
+    from physicalai.runtime.execution import Execution
 
 logger = logging.getLogger(__name__)
 
@@ -164,42 +171,26 @@ class RunStats:
     stale_obs_ticks: int = 0
 
 
-class PolicyRuntime:
-    """Runs a policy on robot hardware.
-
-    Loop: observe → maybe_request → pop → send → sleep.
-
-    Supports context manager for safe lifecycle management::
-
-        with PolicyRuntime(robot=robot, model=model, ...) as runtime:
-            stats = runtime.run(duration_s=60.0)
-    """
+class RobotRuntime:
+    """Generic robot runtime loop with pluggable action-selection controller."""
 
     def __init__(  # noqa: D107
         self,
         robot: Robot,
-        model: InferenceModel,
-        execution: Execution,
+        controller: Controller,
         fps: float,
         cameras: Mapping[str, Camera] | None = None,
-        action_queue: ActionQueue | None = None,
         callbacks: Sequence[Any] = (),
-        task: str | None = None,
     ) -> None:
         if fps <= 0:
             msg = f"fps must be positive, got {fps}"
             raise ValueError(msg)
         self._robot = robot
-        self._model = model
-        self._execution = execution
+        self._controller = controller
         self._fps = fps
         self._cameras: Mapping[str, Camera] = cameras or {}
-        self._action_queue = action_queue or ChunkedActionQueue(
-            smoother=LerpSmoother(duration_frames=_DEFAULT_LERP_FRAMES)
-        )
         self._bus = _CallbackBus(callbacks)
         self._goal_time = (1.0 / fps) * _GOAL_TIME_TICKS
-        self._task = task
         self._connected = False
         self._last_robot_obs: RobotObservation | None = None
         self._last_camera_frames: dict[str, Frame] = {}
@@ -280,56 +271,40 @@ class PolicyRuntime:
 
     @classmethod
     def from_config(cls, config: str | Path) -> Self:
-        """Build a :class:`PolicyRuntime` from a YAML/JSON config file.
-
-        Uses the same schema as ``physicalai run --config``. The optional
-        top-level ``run:`` block is parsed but ignored — pass ``duration_s``
-        to :meth:`run` directly.
-
-        Args:
-            config: Path to a YAML or JSON config file.
+        """Build runtime from YAML/JSON config file.
 
         Returns:
-            Instantiated runtime, not yet connected. Call ``connect()`` or
-            use as a context manager before invoking ``run()``.
-
-        Example::
-
-            with PolicyRuntime.from_config("rtc_runtime.yaml") as runtime:
-                runtime.run(duration_s=60)
+            Instantiated runtime object.
         """
         from jsonargparse import ActionConfigFile, ArgumentParser  # noqa: PLC0415
 
         parser = ArgumentParser()
         parser.add_argument("--config", action=ActionConfigFile)
         parser.add_class_arguments(cls, "runtime")
-        # Accept (and ignore) the CLI's ``run:`` block so configs round-trip
-        # between ``physicalai run --config`` and ``from_config``.
         parser.add_method_arguments(cls, "run", "run")
         ns = parser.parse_args(["--config", str(config)])
         return parser.instantiate(ns).runtime
 
-    def run(self, *, duration_s: float | None = None) -> RunStats:  # noqa: PLR0915
+    def run(self, *, duration_s: float | None = None) -> RunStats:
         """Run the control loop.
 
-        Args:
-            duration_s: Maximum duration in seconds. None runs indefinitely.
-
         Returns:
-            Statistics from the run session.
+            Statistics for this run session.
 
         Raises:
-            RuntimeError: If called before connect().
-            WorkerDiedError: If the inference worker thread dies.
+            RuntimeError: If called before ``connect()``.
+            WorkerDiedError: If controller/execution worker dies.
         """
         if not self._connected:
-            msg = "PolicyRuntime.run() called before connect(). Use 'with runtime:' or call runtime.connect() first."
+            msg = "RobotRuntime.run() called before connect(). Use 'with runtime:' or call runtime.connect() first."
             raise RuntimeError(msg)
 
         self._reset_session()
+        self._controller.reset()
 
-        self._execution.set_bus(self._bus, self._session_id)
-        self._execution.start(self._model, self._action_queue)  # type: ignore[arg-type]
+        if isinstance(self._controller, SupportsBus):
+            self._controller.set_bus(self._bus, self._session_id)
+        self._controller.start()
         self._bus.emit_lifecycle(
             LifecycleEvent(
                 session_id=self._session_id,
@@ -347,8 +322,6 @@ class PolicyRuntime:
 
         goal_time = 1.0 / self._fps
         step = 0
-        last_action: np.ndarray | None = None
-        stale_this_tick = False
 
         try:
             while True:
@@ -356,19 +329,16 @@ class PolicyRuntime:
                     break
 
                 loop_start = time.perf_counter()
-                stale_this_tick = False
+                tick = Tick(
+                    frame_index=step,
+                    timestamp=time.time(),
+                    read_robot_state=self._read_robot_resilient,
+                    read_camera_frames=self._read_cameras_resilient,
+                )
 
-                robot_obs, camera_frames = self._resilient_observe()
-                if self._consecutive_error_ticks > 0:
-                    stale_this_tick = True
-                self._execution.maybe_request(self._build_model_input_from(robot_obs, camera_frames))
-
-                action = self._action_queue.pop()
-                if action is not None:
-                    last_action = action
-                else:
-                    action = last_action
-                    self._handle_hold(step=step)
+                action = self._controller.update(tick)
+                if isinstance(self._controller, SupportsHoldInfo) and self._controller.last_was_hold:
+                    self._handle_hold(step=step, holds=self._controller.holds)
 
                 if action is None:
                     logger.error("No action available (warmup may have failed)")
@@ -391,13 +361,14 @@ class PolicyRuntime:
                         session_id=self._session_id,
                         step=step,
                         timestamp=time.time(),
-                        robot_observation=robot_obs,
-                        camera_frames=camera_frames,
+                        tick=tick,
                         action_sent=action,
-                        queue_remaining=self._action_queue.remaining,
+                        queue_remaining=self._controller.remaining
+                        if isinstance(self._controller, SupportsDrain)
+                        else 0,
                         loop_duration_s=elapsed,
                         sleep_time_s=max(sleep_time, 0.0),
-                        stale_obs=stale_this_tick,
+                        stale_obs=tick.robot_state_stale,
                     )
                 )
                 step += 1
@@ -410,17 +381,18 @@ class PolicyRuntime:
         finally:
             self._shutdown(step)
 
+        stats_hook = self._controller if isinstance(self._controller, SupportsStats) else None
+        controller_stats = stats_hook.stats() if stats_hook is not None else {}
         return RunStats(
             steps=step,
-            total_pops=self._action_queue.total_pops,
-            total_holds=self._action_queue.total_holds,
-            inference_count=getattr(self._execution, "inference_count", 0),
+            total_pops=controller_stats.get("total_pops", 0),
+            total_holds=controller_stats.get("total_holds", 0),
+            inference_count=controller_stats.get("inference_count", 0),
             transient_errors=self._transient_errors,
             stale_obs_ticks=self._stale_obs_ticks,
         )
 
-    def _handle_hold(self, *, step: int) -> None:
-        holds = self._action_queue.consecutive_holds
+    def _handle_hold(self, *, step: int, holds: int) -> None:
         if holds == 1:
             logger.warning("Queue empty — holding position")
         elif self._fps > 0:
@@ -441,7 +413,6 @@ class PolicyRuntime:
         self._consecutive_error_ticks = 0
         self._stale_obs_ticks = 0
         self._transient_errors = 0
-        self._action_queue.reset()
 
     @staticmethod
     def _tick_sleep(loop_start: float, goal_time: float) -> tuple[float, float]:
@@ -450,37 +421,6 @@ class PolicyRuntime:
         if sleep_time > 0:
             time.sleep(sleep_time)
         return elapsed, sleep_time
-
-    def _build_model_input(self) -> dict[str, Any]:
-        robot_obs = self._robot.get_observation()
-        camera_frames = {name: cam.read_latest() for name, cam in self._cameras.items()}
-
-        return self._build_model_input_from(robot_obs, camera_frames)
-
-    def _build_model_input_from(self, robot_obs: RobotObservation, camera_frames: dict[str, Frame]) -> dict[str, Any]:
-        """Assemble model input dict from observation and camera frames.
-
-        Returns:
-            Dictionary ready to pass to the inference model.
-        """
-        model_input: dict[str, Any] = {STATE: np.array([robot_obs.state], dtype=np.float32)}
-        image_inputs: dict[str, np.ndarray] = {}
-        # Merge robot-embedded images and external cameras
-        if robot_obs.images:
-            for name, frame in robot_obs.images.items():
-                image_inputs[name] = frame.data[np.newaxis]
-        for name, frame in camera_frames.items():
-            image_inputs[name] = frame.data[np.newaxis]
-
-        if len(image_inputs) > 1:
-            for name, data in image_inputs.items():
-                model_input[f"{IMAGES}.{name}"] = data
-        elif len(image_inputs) == 1:
-            model_input[IMAGES] = next(iter(image_inputs.values()))
-
-        if self._task is not None:
-            model_input[TASK] = [self._task]
-        return model_input
 
     def _retry_robot_obs(self) -> tuple[RobotObservation | None, ConnectionError | OSError | None]:
         robot_obs: RobotObservation | None = None
@@ -496,17 +436,7 @@ class PolicyRuntime:
                 break
         return robot_obs, last_error
 
-    def _resilient_observe(self) -> tuple[RobotObservation, dict[str, Frame]]:
-        """Read robot observation and camera frames with retry and stale fallback.
-
-        Returns:
-            Tuple of (robot observation, camera frames keyed by name).
-
-        Raises:
-            ConnectionError: If robot observation fails with no stale fallback or
-                max consecutive errors exceeded.
-            CaptureError: If a camera read fails and no stale frame is available.
-        """
+    def _read_robot_resilient(self) -> tuple[RobotObservation, bool]:
         robot_obs, last_robot_error = self._retry_robot_obs()
 
         if robot_obs is None:
@@ -544,11 +474,13 @@ class PolicyRuntime:
                     metadata={"error": str(last_robot_error), "stale": True},
                 )
             )
-            robot_obs = self._last_robot_obs
-        else:
-            self._consecutive_error_ticks = 0
-            self._last_robot_obs = robot_obs
+            return self._last_robot_obs, True
 
+        self._consecutive_error_ticks = 0
+        self._last_robot_obs = robot_obs
+        return robot_obs, False
+
+    def _read_cameras_resilient(self) -> dict[str, Frame]:
         camera_frames: dict[str, Frame] = {}
         for name, camera in self._cameras.items():
             try:
@@ -565,8 +497,21 @@ class PolicyRuntime:
                     exc,
                 )
                 camera_frames[name] = stale_frame
+        return camera_frames
 
-        return robot_obs, camera_frames
+    def _resilient_observe(self) -> tuple[RobotObservation, dict[str, Frame]]:
+        """Read robot observation and camera frames with retry and stale fallback.
+
+        Returns:
+            Tuple ``(robot_observation, camera_frames)``.
+        """
+        tick = Tick(
+            frame_index=0,
+            timestamp=time.time(),
+            read_robot_state=self._read_robot_resilient,
+            read_camera_frames=self._read_cameras_resilient,
+        )
+        return tick.robot_state(), dict(tick.camera_frames())
 
     def _resilient_send(self, action: np.ndarray) -> None:
         last_error: ConnectionError | OSError | None = None
@@ -613,9 +558,14 @@ class PolicyRuntime:
         last_error: ConnectionError | OSError | None = None
 
         for attempt in range(_WARMUP_RETRIES):
+            tick = Tick(
+                frame_index=attempt,
+                timestamp=time.time(),
+                read_robot_state=self._read_robot_resilient,
+                read_camera_frames=self._read_cameras_resilient,
+            )
             try:
-                sample_obs = self._build_model_input()
-                self._execution.warmup(sample_obs)
+                self._controller.warmup(tick)
             except (ConnectionError, OSError) as exc:
                 last_error = exc
                 if attempt + 1 < _WARMUP_RETRIES:
@@ -635,13 +585,11 @@ class PolicyRuntime:
         raise ConnectionError(msg) from last_error
 
     def _shutdown(self, step: int) -> None:
-        self._execution.stop()
+        self._controller.stop()
 
-        remaining = self._action_queue.remaining
-        drain_limit = min(remaining, int(self._fps))
-        for _ in range(drain_limit):
-            action = self._action_queue.pop()
-            if action is not None:
+        if isinstance(self._controller, SupportsDrain):
+            drain_limit = min(self._controller.remaining, int(self._fps))
+            for action in self._controller.drain(drain_limit):
                 try:
                     self._resilient_send(action)
                 except ConnectionError:
@@ -663,9 +611,57 @@ class PolicyRuntime:
         )
         self._bus.close()
 
+        stats_hook = self._controller if isinstance(self._controller, SupportsStats) else None
+        controller_stats = stats_hook.stats() if stats_hook is not None else {}
         logger.info(
             "Shutdown complete — %d steps, %d pops, %d holds",
             step,
-            self._action_queue.total_pops,
-            self._action_queue.total_holds,
+            controller_stats.get("total_pops", 0),
+            controller_stats.get("total_holds", 0),
         )
+
+
+class PolicyRuntime(RobotRuntime):
+    """Runs a policy on robot hardware.
+
+    Backward-compatible policy-only entry point preserving constructor and
+    white-box helper surface.
+    """
+
+    def __init__(  # noqa: D107
+        self,
+        robot: Robot,
+        model: InferenceModel,
+        execution: Execution,
+        fps: float,
+        cameras: Mapping[str, Camera] | None = None,
+        action_queue: ActionQueue | None = None,
+        callbacks: Sequence[Any] = (),
+        task: str | None = None,
+    ) -> None:
+        policy_controller = PolicyController(
+            model=model,
+            execution=execution,
+            action_queue=action_queue,
+            task=task,
+        )
+        super().__init__(
+            robot=robot,
+            controller=policy_controller,
+            fps=fps,
+            cameras=cameras or {},
+            callbacks=callbacks,
+        )
+        self._policy_controller = policy_controller
+
+    @property
+    def _action_queue(self) -> ActionQueue:
+        return self._policy_controller.action_queue
+
+    def _build_model_input(self) -> dict[str, Any]:
+        robot_obs = self._robot.get_observation()
+        camera_frames = {name: cam.read_latest() for name, cam in self._cameras.items()}
+        return self._build_model_input_from(robot_obs, camera_frames)
+
+    def _build_model_input_from(self, robot_obs: RobotObservation, camera_frames: dict[str, Frame]) -> dict[str, Any]:
+        return self._policy_controller.to_model_input(robot_obs, camera_frames)

@@ -21,9 +21,12 @@ import numpy as np
 from physicalai.runtime.execution import Execution, WorkerDiedError
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
+
     from physicalai.inference.callbacks.rtc_latency import RTCLatencyTracker
     from physicalai.inference.model import InferenceModel
     from physicalai.inference.postprocessors.base import Postprocessor
+    from physicalai.runtime._callback_bus import _CallbackBus
     from physicalai.runtime._rtc_action_queue import RTCActionQueue
 
 logger = logging.getLogger(__name__)
@@ -127,6 +130,8 @@ class RTCExecution(Execution):
         self._thread: threading.Thread | None = None
         self._death_cause: BaseException | None = None
         self._inference_count: int = 0
+        self._bus: _CallbackBus | None = None
+        self._session_id: str = ""
 
     @property
     def chunk_size(self) -> int:
@@ -241,7 +246,7 @@ class RTCExecution(Execution):
         self._chunk_size_discovered = self._chunk_size
         logger.info("RTCExecution warmup complete — chunk_size=%d", self._chunk_size_discovered)
 
-    def maybe_request(self, observation: dict[str, np.ndarray]) -> None:
+    def maybe_request(self, observe_fn: Callable[[], dict[str, np.ndarray]]) -> None:
         """Publish latest observation for the background thread.
 
         The background thread decides when to re-infer based on
@@ -254,6 +259,12 @@ class RTCExecution(Execution):
             msg = f"RTC inference thread died: {self._death_cause}"
             raise WorkerDiedError(msg) from self._death_cause
 
+        if self._rtc_queue is None:
+            return
+        if not self._rtc_queue.below_threshold(self.queue_threshold):
+            return
+
+        observation = observe_fn()
         with self._obs_lock:
             self._obs_slot = {k: v.copy() if isinstance(v, np.ndarray) else v for k, v in observation.items()}
 
@@ -279,12 +290,14 @@ class RTCExecution(Execution):
                 time.sleep(_IDLE_SLEEP_S)
                 continue
 
-            # Snapshot observation
+            # Snapshot observation and consume the slot so a stale sample
+            # (e.g. the warmup observation) is never reused for a later refill.
             with self._obs_lock:
                 if self._obs_slot is None:
                     time.sleep(_IDLE_SLEEP_S)
                     continue
                 inputs = deepcopy(self._obs_slot)
+                self._obs_slot = None
 
             # Build RTC-specific inputs
             inputs = self._inject_rtc_inputs(inputs)

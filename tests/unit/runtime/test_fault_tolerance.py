@@ -275,11 +275,13 @@ class TestRunStatsWithFaults:
 
         def get_obs_with_loop_errors():
             call_count[0] += 1
-            # Call 1: warmup (_build_model_input)
-            # Call 2: first tick (_resilient_observe) — sets _last_robot_obs
+            # Reads are pull-based: the robot is read only on ticks that request
+            # inference. With request_threshold=1.0 the queue is below threshold
+            # every tick after the first pop, so each in-loop tick reads once.
+            # Call 1: warmup. Call 2: first read tick — sets _last_robot_obs.
             if call_count[0] <= 2:
                 return obs
-            # Calls 3..5: second tick retries all fail — uses stale fallback
+            # Calls 3..5: next read tick retries all fail — uses stale fallback.
             if call_count[0] <= 2 + _MAX_OBS_RETRIES:
                 raise ConnectionError("flake")
             return obs
@@ -287,7 +289,12 @@ class TestRunStatsWithFaults:
         robot.get_observation.side_effect = get_obs_with_loop_errors
         robot.send_action.return_value = None
 
-        rt = _make_runtime(robot=robot)
+        rt = PolicyRuntime(
+            robot=robot,
+            model=_make_mock_model(),
+            execution=SyncExecution(request_threshold=1.0),
+            fps=10.0,
+        )
         rt._connected = True
 
         with patch("physicalai.runtime.runtime.time") as mock_time:
@@ -298,3 +305,50 @@ class TestRunStatsWithFaults:
 
         assert stats.stale_obs_ticks >= 1
         assert stats.steps == 3
+
+
+class TestStaleObsEventFlag:
+    def test_stale_read_with_successful_send_reports_stale(self) -> None:
+        obs = _make_obs()
+        robot = _make_mock_robot(obs)
+
+        call_count = [0]
+
+        def get_obs_with_one_stale_tick():
+            call_count[0] += 1
+            # Call 1: warmup. Call 2: first read tick (sets _last_robot_obs).
+            if call_count[0] <= 2:
+                return obs
+            # Calls 3..5: next read tick fails all retries -> stale fallback used.
+            if call_count[0] <= 2 + _MAX_OBS_RETRIES:
+                raise ConnectionError("flake")
+            return obs
+
+        robot.get_observation.side_effect = get_obs_with_one_stale_tick
+        robot.send_action.return_value = None  # send always succeeds
+
+        events: list[Any] = []
+        callback = MagicMock()
+        callback.on_tick.side_effect = events.append
+        callback.before_send_action.return_value = None
+
+        rt = PolicyRuntime(
+            robot=robot,
+            model=_make_mock_model(),
+            execution=SyncExecution(request_threshold=1.0),
+            fps=10.0,
+            callbacks=[callback],
+        )
+        rt._connected = True
+
+        with patch("physicalai.runtime.runtime.time") as mock_time:
+            mock_time.perf_counter.return_value = 0.0
+            mock_time.sleep = MagicMock()
+            mock_time.time.return_value = 0.0
+            rt.run(duration_s=0.3)
+
+        # Despite every send succeeding, the tick whose robot read fell back to a
+        # stale observation must report stale_obs=True (it is derived from the
+        # per-tick read, not the send-reset error counter).
+        assert any(e.stale_obs for e in events)
+        assert any(e.tick.robot_state_stale for e in events)

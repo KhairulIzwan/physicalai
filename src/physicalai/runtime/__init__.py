@@ -5,7 +5,8 @@
 
 Public API::
 
-    from physicalai.runtime import PolicyRuntime, RunStats, RuntimeCallback
+    from physicalai.runtime import Controller, PolicyController, Tick
+    from physicalai.runtime import RobotRuntime, PolicyRuntime, RunStats, RuntimeCallback
     from physicalai.runtime import SyncExecution, AsyncExecution, Execution, WorkerDiedError
     from physicalai.runtime import ActionQueue, ChunkedActionQueue
     from physicalai.runtime import ChunkSmoother, LerpSmoother, ReplaceSmoother
@@ -21,6 +22,7 @@ from physicalai.runtime.callbacks import (
     JsonlCallback,
     RerunCallback,
 )
+from physicalai.runtime.controller import Controller, PolicyController, TeleopController
 from physicalai.runtime.events import InferenceEvent, LifecycleEvent, TickEvent
 from physicalai.runtime.execution import (
     AsyncExecution,
@@ -33,10 +35,12 @@ from physicalai.runtime.runtime import (
     ActionQueue,
     LowPassFilterCallback,
     PolicyRuntime,
+    RobotRuntime,
     RunStats,
     RuntimeCallback,
 )
 from physicalai.runtime.smoothers import ChunkSmoother, LerpSmoother, ReplaceSmoother
+from physicalai.runtime.tick import Tick
 
 __all__ = [
     "ActionQueue",
@@ -45,20 +49,25 @@ __all__ = [
     "ChunkSmoother",
     "ChunkedActionQueue",
     "ConsoleCallback",
+    "Controller",
     "Execution",
     "InferenceEvent",
     "JsonlCallback",
     "LerpSmoother",
     "LifecycleEvent",
     "LowPassFilterCallback",
+    "PolicyController",
     "PolicyRuntime",
     "RTCActionQueue",
     "RTCExecution",
     "ReplaceSmoother",
     "RerunCallback",
+    "RobotRuntime",
     "RunStats",
     "RuntimeCallback",
     "SyncExecution",
+    "TeleopController",
+    "Tick",
     "TickEvent",
     "WorkerDiedError",
 ]

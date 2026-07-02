@@ -11,7 +11,7 @@ import numpy as np
 import pytest
 
 from physicalai.runtime.events import InferenceEvent, LifecycleEvent, TickEvent
-from tests.unit.runtime.conftest import FakeRobotObservation
+from tests.unit.runtime.conftest import FakeRobotObservation, make_fake_tick
 
 
 @pytest.fixture()
@@ -63,10 +63,11 @@ def _tick(step: int = 0, dof: int = 7) -> TickEvent:
         session_id="sess-1",
         step=step,
         timestamp=1000.0 + step * (1 / 30),
-        robot_observation=FakeRobotObservation(
-            joint_positions=np.arange(dof, dtype=np.float64),
+        tick=make_fake_tick(
+            FakeRobotObservation(
+                joint_positions=np.arange(dof, dtype=np.float64),
+            )
         ),
-        camera_frames={},
         action_sent=np.ones(dof, dtype=np.float64),
         queue_remaining=5,
         loop_duration_s=0.033,
@@ -209,10 +210,11 @@ class TestRerunCallbackTick:
             session_id="sess-1",
             step=1,
             timestamp=1000.0,
-            robot_observation=FakeRobotObservation(
-                joint_positions=np.arange(7, dtype=np.float64),
+            tick=make_fake_tick(
+                FakeRobotObservation(
+                    joint_positions=np.arange(7, dtype=np.float64),
+                )
             ),
-            camera_frames={},
             action_sent=None,
             queue_remaining=5,
             loop_duration_s=0.033,

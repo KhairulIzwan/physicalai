@@ -50,7 +50,7 @@ class TestSyncExecution:
 
         model.predict_action_chunk.reset_mock()
         model.predict_action_chunk.return_value = chunk
-        ex.maybe_request(obs)
+        ex.maybe_request(lambda: obs)
 
         assert queue.remaining == 4
         model.predict_action_chunk.assert_called_once()
@@ -67,8 +67,23 @@ class TestSyncExecution:
         queue.pop()
 
         model.predict_action_chunk.reset_mock()
-        ex.maybe_request(obs)
+        ex.maybe_request(lambda: obs)
         model.predict_action_chunk.assert_not_called()
+
+    def test_maybe_request_skips_provider_when_queue_full(self) -> None:
+        chunk = np.random.randn(8, 2).astype(np.float32)
+        model = _make_mock_model(chunk)
+        queue = ChunkedActionQueue()
+        ex = SyncExecution(request_threshold=0.5)
+        obs = {"state": np.zeros(2)}
+
+        ex.start(model, queue)
+        ex.warmup(obs)
+
+        provider = MagicMock(return_value=obs)
+        ex.maybe_request(provider)
+
+        provider.assert_not_called()
 
     def test_stop_is_noop(self) -> None:
         ex = SyncExecution()
@@ -85,7 +100,7 @@ class TestSyncExecution:
         ex.warmup(obs)
         for _ in range(4):
             queue.pop()
-        ex.maybe_request(obs)
+        ex.maybe_request(lambda: obs)
         assert ex.inference_count == 1
 
 
@@ -128,10 +143,26 @@ class TestAsyncExecution:
 
         model.predict_action_chunk.reset_mock()
         model.predict_action_chunk.return_value = chunk
-        ex.maybe_request(obs)
+        ex.maybe_request(lambda: obs)
 
         time.sleep(0.3)
         assert queue.remaining > 0
+        ex.stop()
+
+    def test_maybe_request_skips_provider_when_queue_full(self) -> None:
+        chunk = np.random.randn(10, 2).astype(np.float32)
+        model = _make_mock_model(chunk)
+        queue = ChunkedActionQueue()
+        ex = AsyncExecution(request_threshold=0.5)
+
+        ex.start(model, queue)
+        obs = {"state": np.zeros(2)}
+        ex.warmup(obs)
+
+        provider = MagicMock(return_value=obs)
+        ex.maybe_request(provider)
+
+        provider.assert_not_called()
         ex.stop()
 
     def test_defensive_copy_of_observation(self) -> None:
@@ -149,7 +180,7 @@ class TestAsyncExecution:
         model.predict_action_chunk.reset_mock()
         original_state = np.array([1.0, 2.0])
         obs_to_submit = {"state": original_state.copy()}
-        ex.maybe_request(obs_to_submit)
+        ex.maybe_request(lambda: obs_to_submit)
         obs_to_submit["state"][:] = 99.0
 
         time.sleep(0.3)
@@ -174,11 +205,11 @@ class TestAsyncExecution:
         for _ in range(4):
             queue.pop()
 
-        ex.maybe_request(obs)
+        ex.maybe_request(lambda: obs)
         time.sleep(0.5)
 
         with pytest.raises(WorkerDiedError, match="model exploded"):
-            ex.maybe_request(obs)
+            ex.maybe_request(lambda: obs)
 
         ex.stop()
 
@@ -211,7 +242,7 @@ class TestAsyncExecution:
 
         model.predict_action_chunk.reset_mock()
         model.predict_action_chunk.return_value = chunk
-        ex.maybe_request(obs)
+        ex.maybe_request(lambda: obs)
         time.sleep(0.3)
 
         assert ex.inference_count >= 1
@@ -240,9 +271,37 @@ class TestAsyncExecution:
 
         for _ in range(4):
             queue.pop()
-        ex.maybe_request(obs)
+        ex.maybe_request(lambda: obs)
 
         time.sleep(0.3)
-        ex.maybe_request(obs)
+        ex.maybe_request(lambda: obs)
 
         ex.stop()
+
+
+class TestRTCExecutionObsSlot:
+    def test_worker_clears_obs_slot_after_consuming_warmup_sample(self) -> None:
+        from physicalai.runtime._rtc_action_queue import RTCActionQueue
+        from physicalai.runtime.rtc_execution import RTCExecution
+
+        chunk_size = 20
+        action_dim = 3
+
+        model = MagicMock()
+        model.chunk_size = chunk_size
+        model.postprocessors = []
+        model.return_value = {"action": np.random.randn(1, chunk_size, action_dim).astype(np.float32)}
+
+        queue = RTCActionQueue()
+        ex = RTCExecution(chunk_size=chunk_size, max_action_dim=action_dim, fps=30.0)
+        ex.start(model, queue)
+        try:
+            ex.warmup({"state": np.zeros(action_dim, dtype=np.float32)})
+
+            # warmup() blocks until the worker produced the first chunk, which means
+            # it has already consumed the warmup observation. The slot must be cleared
+            # so a later below-threshold refill cannot reuse the stale warmup sample.
+            with ex._obs_lock:  # noqa: SLF001
+                assert ex._obs_slot is None  # noqa: SLF001
+        finally:
+            ex.stop()

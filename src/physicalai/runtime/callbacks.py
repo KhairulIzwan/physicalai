@@ -11,7 +11,6 @@ import logging
 import threading
 import time
 from collections import deque
-from dataclasses import replace
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal
 
@@ -61,13 +60,14 @@ class JsonlCallback:
         self._record_chunks = record_chunks
 
     def on_tick(self, event: TickEvent) -> None:  # noqa: D102
+        robot_observation = event.tick.robot_state()
         self._write(
             "tick",
             {
                 "session_id": event.session_id,
                 "step": event.step,
                 "timestamp": event.timestamp,
-                "joint_positions": _np_to_list(event.robot_observation.joint_positions),
+                "joint_positions": _np_to_list(robot_observation.joint_positions),
                 "action_sent": _np_to_list(event.action_sent),
                 "queue_remaining": event.queue_remaining,
                 "loop_duration_s": event.loop_duration_s,
@@ -137,20 +137,20 @@ class AsyncCallback:
 
         Zero-copy SharedCamera frames are views into iceoryx2 shared memory that become
         invalid on the next read_latest() call. Since the background worker may process
-        this event after the next tick, we use dataclasses.replace to produce a new
-        TickEvent with owned copies of any borrowed frame buffers. Frames that already
-        own their data (the common case) are passed through untouched.
+        this event after the next tick, borrowed frames are replaced with owned copies
+        before enqueuing. Frames are only inspected when they were already read this tick;
+        an idle tick that pulled no frames is not forced to read the camera here.
         """
-        if any(not f.data.flags.owndata for f in event.camera_frames.values()):
-            event = replace(
-                event,
-                camera_frames={
+        if event.tick.camera_frames_cached():
+            camera_frames = event.tick.camera_frames()
+            if any(not f.data.flags.owndata for f in camera_frames.values()):
+                copied = {
                     name: Frame(data=f.data.copy(), timestamp=f.timestamp, sequence=f.sequence)
                     if not f.data.flags.owndata
                     else f
-                    for name, f in event.camera_frames.items()
-                },
-            )
+                    for name, f in camera_frames.items()
+                }
+                event.tick._set_camera_frames(copied)  # noqa: SLF001
         self._enqueue("on_tick", event)
 
     def on_inference(self, event: InferenceEvent) -> None:
@@ -230,7 +230,7 @@ class RerunCallback:
         self._application_id = application_id
 
         self._last_step: int = 0
-        self._fps: int = 30
+        self._fps: float = 30.0
         self._pred_horizon: int = 0
         self._initialized = False
         self._blueprint_updated = False
@@ -249,7 +249,7 @@ class RerunCallback:
         rr.set_time("step", sequence=event.step)
         rr.set_time("wall", timestamp=event.timestamp)
 
-        rr.log("robot/joints", rr.Scalars([float(v) for v in event.robot_observation.joint_positions]))
+        rr.log("robot/joints", rr.Scalars([float(v) for v in event.tick.robot_state().joint_positions]))
 
         if event.action_sent is not None:
             rr.log("robot/actions", rr.Scalars([float(v) for v in event.action_sent]))
@@ -479,17 +479,26 @@ class RerunCallback:
         import rerun as rr  # noqa: PLC0415
 
         for name, sub in self._camera_subscribers.items():
-            try:
-                frame = sub.read_latest()
-                data = frame.data
-                if self._image_max_dim is not None:
-                    data = _downsample_to_max_dim(data, self._image_max_dim)
-                img = rr.Image(data)
-                if self._image_jpeg_quality is not None:
-                    img = img.compress(jpeg_quality=self._image_jpeg_quality)
-                rr.log(f"camera/{name}", img)
-            except Exception:
-                logger.debug("RerunCallback: failed to read camera %r", name, exc_info=True)
+            frame = self._read_camera_frame(sub, name)
+            if frame is None:
+                continue
+
+            data = frame.data
+            if self._image_max_dim is not None:
+                data = _downsample_to_max_dim(data, self._image_max_dim)
+
+            img = rr.Image(data)
+            if self._image_jpeg_quality is not None:
+                img = img.compress(jpeg_quality=self._image_jpeg_quality)
+            rr.log(f"camera/{name}", img)
+
+    @staticmethod
+    def _read_camera_frame(sub: Any, name: str) -> Frame | None:  # noqa: ANN401
+        try:
+            return sub.read_latest()
+        except Exception:
+            logger.debug("RerunCallback: failed to read camera %r", name, exc_info=True)
+            return None
 
     def _log_lifecycle_marker(self, event: LifecycleEvent) -> None:
         import rerun as rr  # noqa: PLC0415
