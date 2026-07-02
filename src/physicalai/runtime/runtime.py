@@ -39,6 +39,23 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+
+def _config_has_class_path(path: str) -> bool:
+    import yaml  # noqa: PLC0415
+
+    try:
+        with open(path, encoding="utf-8") as f:  # noqa: PTH123
+            data = yaml.safe_load(f)
+    except (OSError, yaml.YAMLError):
+        logger.debug("Failed to peek config %s for schema detection", path, exc_info=True)
+        return False
+    if isinstance(data, dict):
+        runtime = data.get("runtime", {})
+        if isinstance(runtime, dict):
+            return "controller" in runtime
+    return False
+
+
 _DEFAULT_LERP_FRAMES = 5
 _MAX_OBS_RETRIES = 3
 _MAX_SEND_RETRIES = 2
@@ -273,16 +290,25 @@ class RobotRuntime:
     def from_config(cls, config: str | Path) -> Self:
         """Build runtime from YAML/JSON config file.
 
+        Supports both the flat PolicyRuntime schema and the general schema with
+        ``runtime.class_path``. The config is peeked to determine which parser
+        to use.
+
         Returns:
             Instantiated runtime object.
         """
         from jsonargparse import ActionConfigFile, ArgumentParser  # noqa: PLC0415
 
+        config_str = str(config)
         parser = ArgumentParser()
         parser.add_argument("--config", action=ActionConfigFile)
-        parser.add_class_arguments(cls, "runtime")
-        parser.add_method_arguments(cls, "run", "run")
-        ns = parser.parse_args(["--config", str(config)])
+        if _config_has_class_path(config_str):
+            parser.add_class_arguments(RobotRuntime, "runtime")
+            parser.add_method_arguments(RobotRuntime, "run", "run")
+        else:
+            parser.add_class_arguments(cls, "runtime")
+            parser.add_method_arguments(cls, "run", "run")
+        ns = parser.parse_args(["--config", config_str])
         return parser.instantiate(ns).runtime
 
     def run(self, *, duration_s: float | None = None) -> RunStats:

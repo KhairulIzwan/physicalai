@@ -282,10 +282,13 @@ class TeleopController:
     def start(self) -> None:
         """No-op — leader is already connected."""
 
+    def set_bus(self, bus: _CallbackBus, session_id: str) -> None:
+        """No-op — teleop does not emit inference events."""
+
     def warmup(self, tick: Tick) -> None:
         """No-op — no inference to seed."""
 
-    def update(self, tick: Tick) -> np.ndarray:  # noqa: ARG002
+    def update(self, tick: Tick) -> np.ndarray | None:  # noqa: ARG002
         """Read the leader arm and return the action for the follower.
 
         Returns:
