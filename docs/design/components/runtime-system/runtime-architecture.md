@@ -480,8 +480,13 @@ The existing schema (flat policy runtime) keeps working via `PolicyRuntime`:
 
 ```yaml
 runtime:
-  robot: { class_path: physicalai.robot.SO101, init_args: { port: /dev/ttyACM0 } }
-  model: { class_path: physicalai.inference.InferenceModel, init_args: { export_dir: ./exports/act } }
+  robot:
+    { class_path: physicalai.robot.SO101, init_args: { port: /dev/ttyACM0 } }
+  model:
+    {
+      class_path: physicalai.inference.InferenceModel,
+      init_args: { export_dir: ./exports/act },
+    }
   execution: { class_path: physicalai.runtime.SyncExecution }
   fps: 30.0
 ```
@@ -493,11 +498,16 @@ runtime:
   class_path: physicalai.runtime.RobotRuntime
   init_args:
     fps: 30.0
-    robot: { class_path: physicalai.robot.SO101, init_args: { port: /dev/ttyACM0 } }
+    robot:
+      { class_path: physicalai.robot.SO101, init_args: { port: /dev/ttyACM0 } }
     controller:
       class_path: physicalai.runtime.PolicyController
       init_args:
-        model: { class_path: physicalai.inference.InferenceModel, init_args: { export_dir: ./exports/act } }
+        model:
+          {
+            class_path: physicalai.inference.InferenceModel,
+            init_args: { export_dir: ./exports/act },
+          }
         execution: { class_path: physicalai.runtime.SyncExecution }
 ```
 
