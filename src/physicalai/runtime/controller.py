@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import contextlib
 from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
 import numpy as np
@@ -278,9 +279,13 @@ class TeleopController:
     ) -> None:
         self._leader = leader
         self._to_action = to_action or (lambda obs: obs.joint_positions)
+        self._leader_owned = False
 
     def start(self) -> None:
-        """No-op — leader is already connected."""
+        """Connect leader if not already connected."""
+        if not self._leader.is_connected():
+            self._leader.connect()
+            self._leader_owned = True
 
     def set_bus(self, bus: _CallbackBus, session_id: str) -> None:
         """No-op — teleop does not emit inference events."""
@@ -297,7 +302,10 @@ class TeleopController:
         return self._to_action(self._leader.get_observation())
 
     def stop(self) -> None:
-        """No-op — leader lifecycle is managed externally."""
+        """Disconnect leader if we connected it."""
+        if self._leader_owned:
+            with contextlib.suppress(Exception):
+                self._leader.disconnect()
 
     def reset(self) -> None:
         """No-op — no session state to clear."""
