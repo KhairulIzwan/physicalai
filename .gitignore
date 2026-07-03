@@ -211,3 +211,9 @@ __marimo__/
 
 # Misc
 .DS_Store
+
+# Local model weights (too large for git — use benchmark.py --download-only)
+models/
+
+# Python virtual environment
+.venv/
