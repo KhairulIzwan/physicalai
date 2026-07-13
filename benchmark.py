@@ -26,6 +26,7 @@ import argparse
 import json
 from itertools import repeat
 from pathlib import Path
+import re
 
 import numpy as np
 
@@ -111,9 +112,52 @@ def list_available_models() -> None:
 
 def resolve_model_path(model: str) -> Path:
     """Return a local Path — downloads from HF hub if model looks like a repo ID."""
-    local = Path(model)
+    local = Path(model).expanduser()
     if local.exists():
         return local
+
+    def _probably_local_reference(value: str, path: Path) -> bool:
+        if path.is_absolute() or value.startswith(("./", "../", "~/")):
+            return True
+        if path.parts and path.parts[0] == "models":
+            return True
+        return path.parent != Path(".") and path.parent.exists()
+
+    def _normalize_name(value: str) -> str:
+        lowered = value.lower()
+        lowered = lowered.replace("openvino--", "")
+        lowered = lowered.replace("-ov", "")
+        return re.sub(r"[^a-z0-9]", "", lowered)
+
+    if _probably_local_reference(model, local):
+        models_root = Path("models")
+        if models_root.exists():
+            requested = _normalize_name(local.name)
+            candidates = []
+            for d in sorted(models_root.iterdir()):
+                if not d.is_dir() or not (d / "manifest.json").exists():
+                    continue
+                name = _normalize_name(d.name)
+                if requested and (requested in name or name in requested):
+                    candidates.append(d)
+
+            if len(candidates) == 1:
+                print(f"Local model not found at '{local}', using closest match: {candidates[0]}")
+                return candidates[0]
+
+            available = [str(d) for d in sorted(models_root.iterdir())
+                         if d.is_dir() and (d / "manifest.json").exists()]
+            msg = [
+                f"Local model path not found: {local}",
+                "This looks like a local path, so HuggingFace download was skipped.",
+            ]
+            if available:
+                msg.append("Available local models:")
+                msg.extend([f"  - {p}" for p in available])
+            else:
+                msg.append("No local exported models found under ./models")
+            raise FileNotFoundError("\n".join(msg))
+
     # Treat as HuggingFace repo ID
     print(f"Downloading from HuggingFace: {model} ...")
     downloaded = Path(download_from_hub(model))
@@ -177,8 +221,12 @@ def main():
         print("Error: --model is required unless --list-models is used.")
         return
 
-    model_path = resolve_model_path(args.model)
-    policy = detect_policy(model_path)
+    try:
+        model_path = resolve_model_path(args.model)
+        policy = detect_policy(model_path)
+    except (FileNotFoundError, PermissionError, ValueError) as exc:
+        print(f"Error: {exc}")
+        return
 
     print(f"Model      : {model_path}")
     print(f"Policy     : {policy}")

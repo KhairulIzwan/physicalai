@@ -12,6 +12,7 @@ like a local export.
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 
@@ -49,6 +50,7 @@ def download_from_hub(
     """
     try:
         from huggingface_hub import snapshot_download  # noqa: PLC0415
+        from huggingface_hub.errors import HfHubHTTPError  # noqa: PLC0415
     except ImportError as exc:  # pragma: no cover - exercised via patched import in tests
         msg = (
             "Loading a policy from the Hugging Face Hub requires the "
@@ -57,16 +59,33 @@ def download_from_hub(
         )
         raise ImportError(msg) from exc
 
+    if token is None:
+        token = os.getenv("HF_TOKEN") or os.getenv("HUGGINGFACE_HUB_TOKEN")
+
     kwargs: dict[str, object] = {}
     if token is not None:
         kwargs["token"] = token
 
-    local_path = snapshot_download(
-        repo_id=repo_id,
-        revision=revision,
-        cache_dir=str(cache_dir) if cache_dir is not None else None,
-        allow_patterns=allow_patterns,
-        **kwargs,
-    )
+    try:
+        local_path = snapshot_download(
+            repo_id=repo_id,
+            revision=revision,
+            cache_dir=str(cache_dir) if cache_dir is not None else None,
+            allow_patterns=allow_patterns,
+            **kwargs,
+        )
+    except HfHubHTTPError as exc:
+        text = str(exc).lower()
+        if "401" in text or "unauthorized" in text:
+            msg = (
+                f"Failed to download '{repo_id}' from HuggingFace (401 Unauthorized). "
+                "Authenticate with a valid token and ensure access to this model.\n"
+                "Try:\n"
+                "  1) huggingface-cli login\n"
+                "  2) or export HF_TOKEN=<your_token>\n"
+                "  3) then re-run the benchmark command"
+            )
+            raise PermissionError(msg) from exc
+        raise
 
     return Path(local_path)

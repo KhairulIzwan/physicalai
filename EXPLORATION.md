@@ -1,5 +1,5 @@
 # PhysicalAI Exploration — Intel Panther Lake Platform
-**Date:** 2026-07-02 / 2026-07-03  
+**Date:** 2026-07-02 / 2026-07-03 / 2026-07-14  
 **Platform:** Intel Core Ultra 5 335 (Panther Lake) | 64 GB DDR5-6400 | GPU + NPU  
 **OS:** Linux 6.17-intel | OpenVINO 2026.1 | physicalai 0.1.2.dev15
 
@@ -129,7 +129,26 @@ ValueError: artifact path 'tokenizer.xml' escapes the export directory
 **Cause**: HF cache uses symlinks pointing to `../../blobs/` which resolve outside the snapshot dir.  
 **Fix**: Copy model with `-L` flag to resolve symlinks:
 ```bash
-cp -L /path/to/hf/snapshot/*.xml *.bin *.json /home/user/physicalai/models/pi05-libero-fp16/
+cp -L /path/to/hf/snapshot/*.xml *.bin *.json /home/user/physicalai/models/OpenVINO--pi05-libero-fp16-ov/
+```
+
+### HuggingFace Download Auth (ACT / Pi0.5)
+When running benchmark download commands, set an access token in the shell:
+```bash
+export HF_TOKEN=<your_token>
+```
+
+`benchmark.py` now reads `HF_TOKEN` / `HUGGINGFACE_HUB_TOKEN` automatically when downloading from Hub and prints a concise auth error message on 401.
+
+### Local Model Path Name Mismatch
+`benchmark.py` now treats `models/...` arguments as local-path intent first.
+If the exact folder is missing but there is a single close match, it auto-resolves. Example:
+```bash
+.venv/bin/python benchmark.py --model models/pi05-libero-fp16 --device GPU
+```
+auto-resolves to:
+```bash
+models/OpenVINO--pi05-libero-fp16-ov
 ```
 
 ---
@@ -148,6 +167,9 @@ After a `git clone`, no models are included. Use `benchmark.py` to discover, dow
 cd /home/user/physicalai
 python3 -m venv .venv
 .venv/bin/pip install -e ".[realsense]"
+
+# Optional but recommended for model downloads
+export HF_TOKEN=<your_token>
 
 # 2. List available models on HuggingFace
 .venv/bin/python benchmark.py --list-models
@@ -174,16 +196,11 @@ python3 -m venv .venv
 │   ├── act.xml / act.bin
 │   ├── manifest.json
 │   └── config.json
-├── pi05-libero-fp16/         # 6.3 GB — Pi0.5 FP16, GPU only
-│   ├── pi05.xml / pi05.bin
-│   ├── tokenizer.xml / tokenizer.bin
-│   ├── manifest.json
-│   └── config.json
-└── pi05-libero-int8/         # 3.18 GB — Pi0.5 INT8 quantized with NNCF, GPU only
-    ├── pi05.xml / pi05.bin
-    ├── tokenizer.xml / tokenizer.bin
-    ├── manifest.json
-    └── config.json
+└── OpenVINO--pi05-libero-fp16-ov/  # 6.3 GB — Pi0.5 FP16, GPU only
+	├── pi05.xml / pi05.bin
+	├── tokenizer.xml / tokenizer.bin
+	├── manifest.json
+	└── config.json
 
 ~/.cache/huggingface/hub/
 ├── models--OpenVINO--act-fp16-ov/          # original HF cache (symlinks)
