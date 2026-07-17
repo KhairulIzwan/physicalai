@@ -27,6 +27,7 @@ import json
 from itertools import repeat
 from pathlib import Path
 import re
+import time
 
 import numpy as np
 
@@ -77,15 +78,50 @@ NPU_LARGE_MODEL_WARNING = {
 def list_available_models() -> None:
     """Search HuggingFace for physicalai-compatible models (manifest.json + OpenVINO IR)."""
     from huggingface_hub import HfApi
+    from huggingface_hub.errors import HfHubHTTPError
+
+    def _is_retryable(exc: Exception) -> bool:
+        msg = str(exc).lower()
+        retry_markers = ("timeout", "timed out", "503", "504", "502", "429", "tempor")
+        if any(m in msg for m in retry_markers):
+            return True
+        code = getattr(getattr(exc, "response", None), "status_code", None)
+        return code in {429, 500, 502, 503, 504}
+
+    def _run_with_retry(callable_obj, *args, **kwargs):
+        last_exc = None
+        for attempt in range(1, 4):
+            try:
+                return callable_obj(*args, **kwargs)
+            except Exception as exc:
+                last_exc = exc
+                if not _is_retryable(exc) or attempt == 3:
+                    raise
+                delay = attempt
+                print(f"  transient error ({exc}); retrying in {delay}s...")
+                time.sleep(delay)
+        raise last_exc
+
     api = HfApi()
     print("Searching HuggingFace for physicalai-compatible models...\n")
     candidates = []
+    seen_ids = set()
     for query in ["act-fp16-ov", "pi05", "pi0-ov", "policy-ov"]:
-        for m in api.list_models(search=query, limit=20):
-            if m.id in [c[0] for c in candidates]:
+        try:
+            models = _run_with_retry(lambda: list(api.list_models(search=query, limit=20)))
+        except HfHubHTTPError as exc:
+            print(f"Warning: skipping query '{query}' due to server error: {exc}")
+            continue
+        except Exception as exc:
+            print(f"Warning: skipping query '{query}' due to network error: {exc}")
+            continue
+
+        for m in models:
+            if m.id in seen_ids:
                 continue
+            seen_ids.add(m.id)
             try:
-                files = list(api.list_repo_tree(m.id))
+                files = _run_with_retry(lambda: list(api.list_repo_tree(m.id)))
                 file_names = [f.path for f in files]
                 if "manifest.json" in file_names:
                     bin_mb = sum(f.size for f in files if f.path.endswith(".bin")) / 1e6
@@ -93,8 +129,8 @@ def list_available_models() -> None:
                         (f.path.split(".")[0] for f in files
                          if f.path.endswith(".xml") and "tokenizer" not in f.path), "?")
                     candidates.append((m.id, policy, bin_mb))
-            except Exception:
-                pass
+            except Exception as exc:
+                print(f"  Warning: unable to inspect '{m.id}': {exc}")
 
     print(f"{'Repo ID':<50} {'Policy':<8} Size")
     print("-" * 72)
