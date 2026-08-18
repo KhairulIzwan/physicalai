@@ -22,6 +22,7 @@ nav:
   - Getting Started:
       - Overview: getting-started/README.md
       - Installation: getting-started/installation.md
+    - Hiwonder LeRobot Setup: getting-started/hiwonder-lerobot-setup.md
       - Quickstart: getting-started/quickstart.md
       - Run a Policy: getting-started/run-a-policy.md
   - How-To:
