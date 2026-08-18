@@ -23,6 +23,7 @@ Completed on this host:
 - Host checks: two serial devices and four video device nodes detected.
 - Conda installation: Miniforge installed at `/home/user/miniconda3` because
   the configured proxy returned `403 Forbidden` for `repo.anaconda.com`.
+  Conda `26.3.2` is installed and `auto_activate_base` is set to `false`.
 - Environment: `lerobot` created with Python 3.11 and FFmpeg 7.1.1.
 - Hiwonder package: LeRobot `0.3.4` installed editable at
   `/home/user/hiwonder/lerobot`.
@@ -101,6 +102,10 @@ conda config --set auto_activate_base false
 Open a new terminal, or source the Conda profile script again before using
 `conda`.
 
+Status: done (2026-08-18). Miniforge is installed at `/home/user/miniconda3`
+and verified with Conda `26.3.2`. The base environment is not activated
+automatically.
+
 ## 4. Create the isolated environment
 
 ```bash
@@ -110,6 +115,9 @@ conda activate lerobot
 python --version
 ffmpeg -version | sed -n '1p'
 ```
+
+Status: done (2026-08-18). The `lerobot` environment contains Python
+`3.11.15` and FFmpeg `7.1.1`.
 
 Keep all Hiwonder commands in this environment. Do not install the Hiwonder
 package into the `physicalai` development environment.
@@ -160,6 +168,9 @@ python -m pip show lerobot feetech-servo-sdk
 Expected results include LeRobot `0.3.4`, Feetech SDK `1.0.0`, and the editable
 project location `/home/user/hiwonder/lerobot`.
 
+Status: done (2026-08-18). LeRobot `0.3.4` and Feetech SDK `1.0.0` are
+installed in the `lerobot` environment from `/home/user/hiwonder/lerobot`.
+
 ## 6. Bring up the arms
 
 Identify the leader and follower ports by connecting the follower first and
@@ -207,6 +218,10 @@ Leader:   /dev/ttyACM0
 Follower: /dev/ttyACM1
 Date:     2026-08-18
 ```
+
+Status: port identification done (2026-08-18). The active user is in the
+`dialout` group, both controller nodes are present with group read/write
+permissions, and the two-pass unplug test confirmed the mapping above.
 
 Note: this host is shared. `lerobot-find-port` printed a "SYSTEM CURRENTLY IN
 USE" notice for another tagged user during this session. Coordinate before
