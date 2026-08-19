@@ -42,6 +42,18 @@ Completed on this host:
 - Teleoperation with vision: confirmed working 2026-08-18 (arms + cameras
   connected, joint data streaming). The Rerun display window doesn't open
   in this headless session; that's a GUI limitation, not a hardware issue.
+- USB stability: a faulty Type-C cable and a marginal hub port caused
+  intermittent device loss and corrupted camera frames on 2026-08-19. Both
+  resolved by reseating cables and swapping hub ports. See section 9.
+
+Verified working configuration (2026-08-19):
+
+| Device | Serial | Hub port | Role |
+|---|---|---|---|
+| `/dev/ttyACM0` | `5C4C124628` | `5.1` | leader |
+| `/dev/ttyACM1` | `5C82108705` | `5.2` | follower |
+| `/dev/video0` | *(none)* | `5.4` | `handeye` (gripper) |
+| `/dev/video2` | `202404160005` | `5.3` | `fixed` (environment) |
 
 Current step:
 
@@ -426,18 +438,12 @@ Full found motor list (id: model_number): {1: 777, 2: 777, 3: 777, 4: 777, 5: 77
 ```
 
 Servo ID 6 (gripper) on the **follower** arm did not respond, despite working
-during calibration and vision teleoperation minutes earlier. Suspected cause:
-a loose daisy-chain servo cable to the gripper, possibly disturbed by the
-heavy gripper motion during the follower recalibration pass. Action:
-physically check the follower's gripper servo cable connection (both ends)
-and power before retrying `lerobot-record`.
+during calibration and vision teleoperation minutes earlier.
 
-Also being tested: running `lerobot-record` directly on the physical machine
-instead of over this remote/SSH session, to rule out a remote-session-specific
-USB/serial glitch. Note that USB serial communication is a host-level
-operation and is not normally affected by SSH vs. local execution unless the
-session is itself a VM/container with passthrough USB, so a loose connector
-remains the more likely cause. Result pending.
+**Root cause (identified 2026-08-19):** not a servo or servo-cable fault. The
+follower's USB Type-C cable/connection was failing, so the whole motor bus
+was unreliable. See section 9 for the full diagnosis. After fixing the USB
+connection, both arms enumerate cleanly and the motor bus is stable.
 
 ## 8. Integrate with `physicalai` later
 
@@ -459,6 +465,83 @@ Then validate the runtime with the examples under
 Conda environment and the `physicalai` environment separate until the device
 protocol, joint order, calibration format, and camera observations have been
 confirmed compatible.
+
+## 9. USB troubleshooting (2026-08-19)
+
+A full morning was lost to what looked like a servo fault but was actually USB
+hardware. Recording this so the same symptoms are recognised faster next time.
+
+### Symptom 1: an arm disappears from `/dev`
+
+`lerobot-find-port` failed with `Could not detect the port. No difference was
+found ([])`, and only one `/dev/ttyACM*` node existed instead of two.
+
+Diagnostic commands:
+
+```bash
+ls -l /dev/ttyACM*
+lsusb | grep -i 1a86
+sudo dmesg --time-format=iso | tail -n 30
+```
+
+The kernel log showed the failing controller never enumerating:
+
+```text
+usb 3-5.2: new low-speed USB device number 20 using xhci_hcd
+usb 3-5.2: device descriptor read/64, error -32
+usb 3-5.2: device not accepting address 22, error -71
+usb 3-5-port2: unable to enumerate USB device
+```
+
+**Key diagnostic:** the CH340 (`1a86:55d3`) is a **full-speed** (12 Mbps)
+device. A healthy connection logs `new full-speed USB device`. Logging
+`new low-speed USB device` instead means the D+/D- data lines are not working
+— a cable or connector fault, not a driver or software problem.
+
+**Isolating cable vs. port vs. board:** swap the cable between the two arms.
+If the fault follows the cable, the cable is at fault; if it stays with the
+arm, the board is. Here the fault followed the cable across hub ports `5.1`,
+`5.2`, and `5.4`, while the good cable worked first time on every port —
+proving both BusLinker boards and the hub were healthy.
+
+Note that a brand-new cable can still be faulty, and charge-only Type-C cables
+have no data lines and produce exactly these symptoms. The connection was
+eventually restored by reseating connectors; a poorly seated Type-C plug gives
+the same signature as a dead cable.
+
+### Symptom 2: corrupted camera frames
+
+`lerobot-find-cameras opencv` succeeded, but one camera's test image was part
+real image and part flat green fill, with torn horizontal bands.
+
+**How to tell a corrupted frame from a genuinely green scene:** a real image
+has texture, a lighting gradient, and sensor noise. A truncated USB frame
+leaves a perfectly uniform fill (an unwritten YUV420 buffer renders as green).
+Capturing twice also helps — the proportion of valid image changed between
+captures (about 25%, then 55%), which a static scene cannot do.
+
+**Cause:** bandwidth contention — two arms plus two uncompressed video streams
+on a single 480 Mbps USB 2.0 hub. **Fix:** moving the affected camera to a
+different hub port produced clean full frames. Moving a camera to a direct PC
+port is the more robust fix if it recurs.
+
+### Device names are not stable
+
+`ttyACM*` and `video*` numbering depends on enumeration order, so it changes
+whenever devices are replugged in a different sequence. Always re-verify the
+mapping after any replug:
+
+```bash
+for d in /dev/ttyACM* /dev/video*; do
+  printf '%s | serial=%s | path=%s\n' "$d" \
+    "$(udevadm info --query=property --name="$d" | grep '^ID_SERIAL_SHORT=' | cut -d= -f2)" \
+    "$(udevadm info --query=property --name="$d" | grep '^ID_PATH=' | cut -d= -f2)"
+done
+```
+
+Match arms by serial (`5C4C124628` = leader, `5C82108705` = follower) and
+confirm camera roles from the captured images, not from device numbers.
+Persistent `udev` rules keyed on serial number would remove this ambiguity.
 
 ## Clean reinstall checklist
 
