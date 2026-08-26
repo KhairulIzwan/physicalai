@@ -445,6 +445,38 @@ not available. Each episode runs for `dataset.episode_time_s` seconds
 Dataset saves by default under
 `~/.cache/huggingface/lerobot/wansnap/pick_cube_test`.
 
+#### Continuing a partial recording
+
+If you interrupt the recording before `num_episodes=5` is reached, **do not**
+delete or rename the dataset folder. Instead, resume recording by adding
+`--resume=true` and reduce `--dataset.num_episodes` to the remaining count.
+
+For example, if you have already recorded 2 episodes and want 3 more to reach 5
+total:
+
+```bash
+source /home/user/miniconda3/etc/profile.d/conda.sh
+conda activate lerobot
+cd /home/user/hiwonder/lerobot
+lerobot-record \
+  --robot.type=so101_follower --robot.port=/dev/ttyACM1 --robot.id=follower_arm \
+  --robot.cameras='{
+    "fixed": {"type": "opencv", "index_or_path": "/dev/video0", "width": 640, "height": 480, "fps": 30},
+    "handeye": {"type": "opencv", "index_or_path": "/dev/video2", "width": 640, "height": 480, "fps": 30}
+  }' \
+  --teleop.type=so101_leader --teleop.port=/dev/ttyACM0 --teleop.id=leader_arm \
+  --dataset.repo_id=wansnap/pick_cube_test \
+  --dataset.single_task="pick up the cube and place it in the box" \
+  --dataset.num_episodes=3 \
+  --dataset.push_to_hub=false \
+  --display_data=false \
+  --resume=true
+```
+
+The dataset folder remains at `~/.cache/huggingface/lerobot/wansnap/pick_cube_test`
+and the existing 2 episodes are preserved. After this continuation, the dataset
+will have 5 total episodes.
+
 Status: blocked (2026-08-18). `lerobot-record` failed at robot connect with:
 
 ```
