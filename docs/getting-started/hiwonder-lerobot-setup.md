@@ -32,7 +32,7 @@ Completed on this host:
   after reboot.
 - Port identification: leader = `/dev/ttyACM0`, follower = `/dev/ttyACM1`
   (confirmed 2026-08-18).
-- Calibration: follower and leader both recalibrated successfully 2026-08-19.
+- Calibration: follower and leader both recalibrated successfully 2026-08-26.
   See sections 6.1 and 6.2 for recorded ranges. The follower required one
   recalibration pass to fix a near-zero gripper range; the leader required a
   fresh pass after invalid encoder-wrap values were observed.
@@ -270,19 +270,19 @@ lerobot-calibrate --teleop.type=so101_leader --teleop.port=/dev/ttyACM0 \
 Press Enter to start (or `c` then Enter to recalibrate), then manually rotate
 each joint through its full range as prompted.
 
-Status: done (2026-08-19). Calibration saved to
+Status: done (2026-08-26). Calibration saved to
 `/home/user/.cache/huggingface/lerobot/calibration/teleoperators/so101_leader/leader_arm.json`.
 
-Recorded ranges (ticks), recalibrated 2026-08-19 with the Hiwonder calibration pose:
+Recorded ranges (ticks), recalibrated 2026-08-26:
 
 | joint | min | max |
 |---|---|---|
-| shoulder_pan | 958 | 3335 |
-| shoulder_lift | 887 | 2872 |
-| elbow_flex | 1332 | 3082 |
-| wrist_flex | 2034 | 3147 |
-| wrist_roll | 1800 | 2624 |
-| gripper | 1435 | 2186 |
+| shoulder_pan | 752 | 3292 |
+| shoulder_lift | 758 | 3143 |
+| elbow_flex | 978 | 3177 |
+| wrist_flex | 938 | 3089 |
+| wrist_roll | 820 | 3939 |
+| gripper | 1274 | 2856 |
 
 Validation: all saved ranges are within the STS3215 encoder limits `0-4095`;
 the previous invalid wrap values (`329xx`) and over-limit values (`4430`) are
@@ -300,19 +300,19 @@ lerobot-calibrate --robot.type=so101_follower --robot.port=/dev/ttyACM1 \
   --robot.id=follower_arm
 ```
 
-Status: done (2026-08-19). Calibration saved to
+Status: done (2026-08-26). Calibration saved to
 `/home/user/.cache/huggingface/lerobot/calibration/robots/so101_follower/follower_arm.json`.
 
-Recorded ranges (ticks), recalibrated 2026-08-19 with the Hiwonder calibration pose:
+Recorded ranges (ticks), recalibrated 2026-08-26:
 
 | joint | min | max |
 |---|---|---|
-| shoulder_pan | 1017 | 3131 |
-| shoulder_lift | 816 | 2784 |
-| elbow_flex | 1278 | 3134 |
-| wrist_flex | 2009 | 3078 |
-| wrist_roll | 153 | 3478 |
-| gripper | 1579 | 3043 |
+| shoulder_pan | 763 | 3299 |
+| shoulder_lift | 793 | 3172 |
+| elbow_flex | 954 | 3143 |
+| wrist_flex | 917 | 3104 |
+| wrist_roll | 113 | 3919 |
+| gripper | 1661 | 3102 |
 
 Validation: all saved ranges are within the STS3215 encoder limits `0-4095`.
 The earlier near-zero gripper range was corrected by recalibrating with `c`
