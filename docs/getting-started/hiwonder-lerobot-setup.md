@@ -45,7 +45,7 @@ Completed on this host:
   in this headless session; that's a GUI limitation, not a hardware issue.
 - USB stability: a faulty Type-C cable and a marginal hub port caused
   intermittent device loss and corrupted camera frames on 2026-08-19. Both
-  resolved by reseating cables and swapping hub ports. See section 9.
+  resolved by reseating cables and swapping hub ports. See section 10.
 
 Verified working configuration (2026-08-19):
 
@@ -62,7 +62,7 @@ Current step:
   `loto-status` / contact the tagged user) before running calibration,
   teleoperation, or data collection. Confirmed with the tagged user
   (Izwan) on 2026-08-18.
-- Next: collect a small test dataset. See section 7.
+- Next: collect a small test dataset (section 7) then train/evaluate (section 8).
 
 ## 1. Hardware and safety
 
@@ -463,7 +463,101 @@ follower's USB Type-C cable/connection was failing, so the whole motor bus
 was unreliable. See section 9 for the full diagnosis. After fixing the USB
 connection, both arms enumerate cleanly and the motor bus is stable.
 
-## 8. Integrate with `physicalai` later
+## 8. Validation, training, and evaluation
+
+Once Step 7 completes with 5 episodes, validate the dataset structure before
+attempting training. The 5-episode smoke test is enough to verify the
+recording pipeline but **not sufficient for a useful policy**. A real policy
+typically requires 50+ diverse episodes. Use this section to validate, train
+on the test data as a proof-of-concept, and evaluate performance on the same
+small dataset.
+
+### 8.1 Validate the dataset
+
+```bash
+source /home/user/miniconda3/etc/profile.d/conda.sh
+conda activate lerobot
+cd /home/user/hiwonder/lerobot
+
+python3 -c "
+from lerobot.common.datasets.lerobot_dataset import LeRobotDataset
+ds = LeRobotDataset('wansnap/pick_cube_test')
+print(f'Episodes: {ds.num_episodes}')
+print(f'Frames: {ds.num_frames}')
+print(f'Tasks: {ds.meta[\"total_tasks\"]}')
+print(f'Action features: {list(ds.action_keys)}')
+print(f'Observation features: {list(ds.observation_keys)}')
+"
+```
+
+Expected output for a successful 5-episode run:
+
+```text
+Episodes: 5
+Frames: ~3500
+Tasks: 1
+Action features: ['shoulder_pan.pos', 'shoulder_lift.pos', 'elbow_flex.pos', 'wrist_flex.pos', 'wrist_roll.pos', 'gripper.pos']
+Observation features: ['state', 'images.fixed', 'images.handeye']
+```
+
+### 8.2 Train a policy on the smoke-test dataset
+
+LeRobot supports multiple policy architectures. For a quick proof-of-concept
+with small data, use the `ACT` (Action Chunking Transformer) policy:
+
+```bash
+source /home/user/miniconda3/etc/profile.d/conda.sh
+conda activate lerobot
+cd /home/user/hiwonder/lerobot
+
+lerobot-train \
+  policy.type=act \
+  policy.chunk_size=16 \
+  policy.n_obs_steps=2 \
+  policy.n_action_steps=16 \
+  dataset_repo_id=wansnap/pick_cube_test \
+  training.num_epochs=100 \
+  training.batch_size=32 \
+  training.lr=1e-4 \
+  training.validate_every_n_epochs=10 \
+  training.save_checkpoint_every_n_epochs=10 \
+  training.output_dir=/home/user/hiwonder/lerobot_checkpoints/pick_cube_test_act \
+  device=cpu
+```
+
+This trains on CPU and saves checkpoints to
+`/home/user/hiwonder/lerobot_checkpoints/pick_cube_test_act`.
+
+**Note:** 5 episodes is far too small for a real policy. This is a validation
+step only. For a functional policy, collect at least 50 diverse episodes and
+use GPU training (`device=cuda:0` if available).
+
+### 8.3 Evaluate the trained policy
+
+After training completes, evaluate the policy on the test dataset:
+
+```bash
+source /home/user/miniconda3/etc/profile.d/conda.sh
+conda activate lerobot
+cd /home/user/hiwonder/lerobot
+
+lerobot-eval \
+  -p /home/user/hiwonder/lerobot_checkpoints/pick_cube_test_act/final_model \
+  -d wansnap/pick_cube_test \
+  --output-dir /home/user/hiwonder/lerobot_results/pick_cube_test_eval
+```
+
+This runs the policy on each episode in the test set and saves metrics
+(success rate, mean action error, etc.) to the output directory.
+
+**Interpretation:** With only 5 episodes for both training and evaluation, the
+results will not be statistically meaningful. The purpose here is to validate
+that the LeRobot training and evaluation pipeline works end-to-end with your
+arm and dataset format. Once you collect 50+ episodes with consistent scene,
+lighting, and reset procedure, rerun training and evaluation to measure actual
+policy performance.
+
+## 9. Integrate with `physicalai` later
 
 This repository already contains an SO-101 runtime backend and can read
 LeRobot-style calibration JSON files. It is not a replacement for Hiwonder's
@@ -484,7 +578,7 @@ Conda environment and the `physicalai` environment separate until the device
 protocol, joint order, calibration format, and camera observations have been
 confirmed compatible.
 
-## 9. USB troubleshooting (2026-08-19)
+## 10. USB troubleshooting (2026-08-19)
 
 A full morning was lost to what looked like a servo fault but was actually USB
 hardware. Recording this so the same symptoms are recognised faster next time.
