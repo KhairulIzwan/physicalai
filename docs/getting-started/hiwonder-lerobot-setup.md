@@ -358,8 +358,8 @@ Identified by image content:
 
 | index_or_path | role | notes |
 |---|---|---|
-| `/dev/video0` | `handeye` (gripper camera) | extreme close-range, mounted on/near the follower gripper |
-| `/dev/video2` | `fixed` (environment camera) | wide view of the follower arm and desk area |
+| `/dev/video0` | `fixed` (environment camera) | wide/top view of the follower arm and desk area |
+| `/dev/video2` | `handeye` (gripper camera) | close-range view from the follower gripper |
 
 Camera IDs are not permanently fixed. Re-run `lerobot-find-cameras opencv` and
 re-check the saved images after reconnecting USB cameras, changing ports, or
@@ -372,8 +372,8 @@ lerobot-teleoperate --teleop.type=so101_leader --teleop.port=/dev/ttyACM0 \
   --teleop.id=leader_arm --robot.type=so101_follower \
   --robot.port=/dev/ttyACM1 --robot.id=follower_arm \
   --robot.cameras='{
-    "fixed": {"type": "opencv", "index_or_path": "/dev/video2", "width": 640, "height": 480, "fps": 30},
-    "handeye": {"type": "opencv", "index_or_path": "/dev/video0", "width": 640, "height": 480, "fps": 30}
+    "fixed": {"type": "opencv", "index_or_path": "/dev/video0", "width": 640, "height": 480, "fps": 30},
+    "handeye": {"type": "opencv", "index_or_path": "/dev/video2", "width": 640, "height": 480, "fps": 30}
   }' \
   --display_data=true
 ```
@@ -405,6 +405,15 @@ Test parameters chosen on 2026-08-18:
 | `dataset.num_episodes` | 5 |
 | `dataset.push_to_hub` | `false` (local only) |
 
+If a previous failed run created an empty local dataset directory, move it out
+of the way before recording again. `lerobot-record` creates a new dataset when
+`--resume=false`, so an existing path causes `FileExistsError`:
+
+```bash
+mv /home/user/.cache/huggingface/lerobot/wansnap/pick_cube_test \
+  /home/user/.cache/huggingface/lerobot/wansnap/pick_cube_test_failed_$(date +%Y%m%d_%H%M%S)
+```
+
 Command:
 
 ```bash
@@ -414,18 +423,24 @@ cd /home/user/hiwonder/lerobot
 lerobot-record \
   --robot.type=so101_follower --robot.port=/dev/ttyACM1 --robot.id=follower_arm \
   --robot.cameras='{
-    "fixed": {"type": "opencv", "index_or_path": "/dev/video2", "width": 640, "height": 480, "fps": 30},
-    "handeye": {"type": "opencv", "index_or_path": "/dev/video0", "width": 640, "height": 480, "fps": 30}
+    "fixed": {"type": "opencv", "index_or_path": "/dev/video0", "width": 640, "height": 480, "fps": 30},
+    "handeye": {"type": "opencv", "index_or_path": "/dev/video2", "width": 640, "height": 480, "fps": 30}
   }' \
   --teleop.type=so101_leader --teleop.port=/dev/ttyACM0 --teleop.id=leader_arm \
   --dataset.repo_id=wansnap/pick_cube_test \
   --dataset.single_task="pick up the cube and place it in the box" \
   --dataset.num_episodes=5 \
-  --dataset.push_to_hub=false
+  --dataset.push_to_hub=false \
+  --display_data=false
 ```
 
-Controls during recording: right arrow = save episode and continue, left
-arrow = discard and re-record the current episode, `Ctrl+C`/Esc = stop.
+When running from a graphical local session, right arrow ends/saves the current
+episode early, left arrow discards and re-records the current episode, and Esc
+stops recording. In a headless SSH or VS Code Remote session, LeRobot disables
+the on-screen camera display and keyboard listener, so arrow/Esc controls are
+not available. Each episode runs for `dataset.episode_time_s` seconds
+(default `60`), each reset period runs for `dataset.reset_time_s` seconds
+(default `60`), and `Ctrl+C` is the reliable way to stop the command.
 
 Dataset saves by default under
 `~/.cache/huggingface/lerobot/wansnap/pick_cube_test`.
