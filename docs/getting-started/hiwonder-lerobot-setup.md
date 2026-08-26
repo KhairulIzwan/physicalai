@@ -307,12 +307,12 @@ Recorded ranges (ticks), recalibrated 2026-08-26:
 
 | joint | min | max |
 |---|---|---|
-| shoulder_pan | 892 | 3115 |
-| shoulder_lift | 790 | 2665 |
-| elbow_flex | 1455 | 3145 |
-| wrist_flex | 1910 | 3153 |
-| wrist_roll | 642 | 3167 |
-| gripper | 1885 | 3075 |
+| shoulder_pan | 786 | 3317 |
+| shoulder_lift | 815 | 2558 |
+| elbow_flex | 1563 | 3121 |
+| wrist_flex | 2034 | 3138 |
+| wrist_roll | 988 | 3128 |
+| gripper | 2046 | 3483 |
 
 Validation: all saved ranges are within the STS3215 encoder limits `0-4095`.
 The earlier near-zero gripper range was corrected by recalibrating with `c`
