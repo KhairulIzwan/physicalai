@@ -492,7 +492,7 @@ during calibration and vision teleoperation minutes earlier.
 
 **Root cause (identified 2026-08-19):** not a servo or servo-cable fault. The
 follower's USB Type-C cable/connection was failing, so the whole motor bus
-was unreliable. See section 9 for the full diagnosis. After fixing the USB
+was unreliable. See section 10 for the full diagnosis. After fixing the USB
 connection, both arms enumerate cleanly and the motor bus is stable.
 
 ## 8. Validation, training, and evaluation
@@ -502,7 +502,9 @@ attempting training. The 5-episode smoke test is enough to verify the
 recording pipeline but **not sufficient for a useful policy**. A real policy
 typically requires 50+ diverse episodes. Use this section to validate, train
 on the test data as a proof-of-concept, and evaluate performance on the same
-small dataset.
+small dataset. A pretrained policy can sometimes be run without local
+demonstrations, but it must support this robot's action space, camera inputs,
+and task interface.
 
 ### 8.1 Validate the dataset
 
@@ -512,13 +514,13 @@ conda activate lerobot
 cd /home/user/hiwonder/lerobot
 
 python3 -c "
-from lerobot.common.datasets.lerobot_dataset import LeRobotDataset
+from lerobot.datasets.lerobot_dataset import LeRobotDataset
 ds = LeRobotDataset('wansnap/pick_cube_test')
-print(f'Episodes: {ds.num_episodes}')
-print(f'Frames: {ds.num_frames}')
-print(f'Tasks: {ds.meta[\"total_tasks\"]}')
-print(f'Action features: {list(ds.action_keys)}')
-print(f'Observation features: {list(ds.observation_keys)}')
+print('Episodes:', ds.num_episodes)
+print('Frames:', ds.num_frames)
+print('Tasks:', ds.meta.info['total_tasks'])
+print('Action features:', ds.features['action']['names'])
+print('Observation features:', [name.removeprefix('observation.') for name in ds.features if name.startswith('observation.')])
 "
 ```
 
@@ -563,6 +565,36 @@ This trains on CPU and saves checkpoints to
 **Note:** 5 episodes is far too small for a real policy. This is a validation
 step only. For a functional policy, collect at least 50 diverse episodes and
 use GPU training (`device=cuda:0` if available).
+
+### 8.2.1 Check Pi0/Pi0.5 support
+
+The installed Hiwonder LeRobot package exposes `pi0` and `pi0fast` policy types,
+but it does not expose a separate `pi05` policy type. Check the installed CLI
+before attempting to train or run a Pi0.5 checkpoint:
+
+```bash
+lerobot-train --help | grep -i 'pi0\|pi05'
+lerobot-eval --help | grep -i 'pi0\|pi05'
+```
+
+The expected result contains `pi0` and possibly `pi0fast`, but no standalone
+`pi05` entry. A Pi0.5 checkpoint can only be used directly if this package's
+`pi0` implementation accepts that checkpoint and its expected robot and camera
+interfaces. The ACT command above does not train Pi0.5.
+
+Using a pretrained Pi0.5 policy directly does not require local demonstration
+episodes or fine-tuning, but it is a zero-shot experiment rather than a policy
+adapted to this arm and task. Fine-tuning requires demonstrations and creates a
+new task-specific checkpoint. Confirm the model's required checkpoint,
+authentication, image inputs, and inference command from the model release
+before sending actions to the live arm. Start with low-risk motion limits and
+keep an emergency stop available.
+
+If the checkpoint is incompatible with the installed package, collect the
+demonstrations first and use a LeRobot version and Pi0.5 training workflow that
+explicitly supports that checkpoint. Do not change `policy.type=act` to
+`policy.type=pi0` without also supplying the Pi0-specific configuration required
+by the package.
 
 ### 8.3 Evaluate the trained policy
 
