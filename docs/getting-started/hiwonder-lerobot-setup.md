@@ -597,28 +597,34 @@ by the package.
 
 ### 8.3 Evaluate the trained policy
 
-After training completes, evaluate the policy on the test dataset:
+The installed `lerobot-eval` command evaluates a policy through rollouts in a
+supported environment; it does not calculate success metrics from recorded
+SO-101 episodes. First verify that the saved smoke-test checkpoint can be
+loaded without connecting to the robot:
 
 ```bash
 source /home/user/miniconda3/etc/profile.d/conda.sh
 conda activate lerobot
 cd /home/user/hiwonder/lerobot
 
-lerobot-eval \
-  -p /home/user/hiwonder/lerobot_checkpoints/pick_cube_test_act/final_model \
-  -d wansnap/pick_cube_test \
-  --output-dir /home/user/hiwonder/lerobot_results/pick_cube_test_eval
+python3 -c "
+from lerobot.policies.act.modeling_act import ACTPolicy
+checkpoint = '/home/user/hiwonder/lerobot_checkpoints/pick_cube_test_act_smoke/checkpoints/000010/pretrained_model'
+policy = ACTPolicy.from_pretrained(checkpoint)
+print('Loaded policy:', type(policy).__name__)
+print('Device:', next(policy.parameters()).device)
+"
 ```
 
-This runs the policy on each episode in the test set and saves metrics
-(success rate, mean action error, etc.) to the output directory.
+This confirms that the final checkpoint files are complete and readable. It
+does not measure task success and does not control the physical arm.
 
-**Interpretation:** With only 5 episodes for both training and evaluation, the
-results will not be statistically meaningful. The purpose here is to validate
-that the LeRobot training and evaluation pipeline works end-to-end with your
-arm and dataset format. Once you collect 50+ episodes with consistent scene,
-lighting, and reset procedure, rerun training and evaluation to measure actual
-policy performance.
+For performance evaluation, configure a supported simulated or hardware-in-the-
+loop environment and run `lerobot-eval --policy.path=<checkpoint> ...` with a
+defined task, reset procedure, safety limits, and an emergency stop. Do not use
+the 5-episode smoke-test checkpoint for autonomous SO-101 control. Once you
+collect 50+ consistent demonstrations, train a new policy and evaluate it in a
+controlled environment before live deployment.
 
 ## 9. Integrate with `physicalai` later
 
