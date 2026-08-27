@@ -545,22 +545,21 @@ conda activate lerobot
 cd /home/user/hiwonder/lerobot
 
 lerobot-train \
-  policy.type=act \
-  policy.chunk_size=16 \
-  policy.n_obs_steps=2 \
-  policy.n_action_steps=16 \
-  dataset_repo_id=wansnap/pick_cube_test \
-  training.num_epochs=100 \
-  training.batch_size=32 \
-  training.lr=1e-4 \
-  training.validate_every_n_epochs=10 \
-  training.save_checkpoint_every_n_epochs=10 \
-  training.output_dir=/home/user/hiwonder/lerobot_checkpoints/pick_cube_test_act \
-  device=cpu
+  --policy.type=act \
+  --dataset.repo_id=wansnap/pick_cube_test \
+  --output_dir=/home/user/hiwonder/lerobot_checkpoints/pick_cube_test_act_smoke \
+  --steps=10 \
+  --batch_size=2 \
+  --save_checkpoint=true \
+  --save_freq=5 \
+  --policy.device=cpu \
+  --policy.push_to_hub=false
 ```
 
-This trains on CPU and saves checkpoints to
-`/home/user/hiwonder/lerobot_checkpoints/pick_cube_test_act`.
+This is a local-only, 10-step smoke test. It does not connect to the robot or
+upload to Hugging Face. It saves checkpoints at steps 5 and 10 to
+`/home/user/hiwonder/lerobot_checkpoints/pick_cube_test_act_smoke`. On this
+host, the test completed successfully on CPU in about 7 minutes.
 
 **Note:** 5 episodes is far too small for a real policy. This is a validation
 step only. For a functional policy, collect at least 50 diverse episodes and
