@@ -184,6 +184,39 @@ project location `/home/user/hiwonder/lerobot`.
 Status: done (2026-08-18). LeRobot `0.3.4` and Feetech SDK `1.0.0` are
 installed in the `lerobot` environment from `/home/user/hiwonder/lerobot`.
 
+### Optional: install the preserved fork
+
+The original Hiwonder archive step above remains the reference installation
+path. If you want the Hiwonder source plus the compatibility fixes and tested
+SO101 workflow preserved in Git, use the fork instead of extracting the
+archive:
+
+```bash
+cd /home/user
+git clone --branch hiwonder-validated-so101 \
+  https://github.com/KhairulIzwan/lerobot.git hiwonder/lerobot
+cd /home/user/hiwonder/lerobot
+conda activate lerobot
+python -m pip install -e ".[feetech]"
+```
+
+This fork branch contains the Hiwonder source and the validated
+`max_relative_target` compatibility fix. Do not install both trees into the
+same location. If `/home/user/hiwonder/lerobot` already contains the extracted
+archive, keep using that working tree or move it aside before cloning the fork.
+
+Verify the selected source and package installation:
+
+```bash
+git remote -v
+git branch --show-current
+python -c 'import lerobot; print(lerobot.__file__)'
+```
+
+Expected branch: `hiwonder-validated-so101`. The fork is optional; the
+original Hiwonder download and install instructions above remain valid when a
+vendor archive is required.
+
 ## 6. Bring up the arms
 
 Identify the leader and follower ports by connecting the follower first and
