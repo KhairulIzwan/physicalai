@@ -405,34 +405,105 @@ Test parameters chosen on 2026-08-18:
 | `dataset.num_episodes` | 5 |
 | `dataset.push_to_hub` | `false` (local only) |
 
+Validated safety setting and dataset naming for the SO101 follower workflow
+(2026-08-27): `--robot.max_relative_target=5` is a practical default for the
+cube-pick task and was successfully used in a recorded 1-episode validation run
+that exited cleanly with code 0. The safety clamp remains active, so the action
+stream may log warnings when the policy tries to move beyond the configured
+bound; this is expected and does not imply that the run failed.
+
+When a policy is supplied, the dataset name must start with `eval_`.
+`lerobot-record` rejects dataset names like `wansnap/pick_cube_autonomous_trial`
+for policy-driven recording. Use a fresh eval dataset name such as
+`wansnap/eval_pick_cube_autonomous_trial_run3` to avoid local cache collisions.
+
 If a previous failed run created an empty local dataset directory, move it out
 of the way before recording again. `lerobot-record` creates a new dataset when
 `--resume=false`, so an existing path causes `FileExistsError`:
 
 ```bash
-mv /home/user/.cache/huggingface/lerobot/wansnap/pick_cube_test \
-  /home/user/.cache/huggingface/lerobot/wansnap/pick_cube_test_failed_$(date +%Y%m%d_%H%M%S)
+mv /home/user/.cache/huggingface/lerobot/wansnap/pick_cube_autonomous_trial \
+  /home/user/.cache/huggingface/lerobot/wansnap/pick_cube_autonomous_trial_failed_$(date +%Y%m%d_%H%M%S)
 ```
 
-Command:
+### One-command fix
+
+This removes the stale local dataset directory and reruns the recording with a
+fresh eval-named repo. Use this only when the existing directory contains a
+failed or disposable run:
+
+```bash
+source /home/user/miniconda3/etc/profile.d/conda.sh
+conda activate lerobot
+cd /home/user/hiwonder/lerobot
+rm -rf /home/user/.cache/huggingface/lerobot/wansnap/pick_cube_autonomous_trial && \
+lerobot-record \
+  --robot.type=so101_follower \
+  --robot.port=/dev/ttyACM1 \
+  --robot.id=follower_arm \
+  --robot.max_relative_target=5 \
+  --robot.cameras='{
+    "fixed": {"type": "opencv", "index_or_path": "/dev/video0", "width": 640, "height": 480, "fps": 30}, \
+    "handeye": {"type": "opencv", "index_or_path": "/dev/video2", "width": 640, "height": 480, "fps": 30} \
+  }' \
+  --policy.path=/home/user/hiwonder/lerobot_checkpoints/pick_cube_test_act_smoke/checkpoints/000010/pretrained_model \
+  --policy.device=cpu \
+  --dataset.repo_id=wansnap/eval_pick_cube_autonomous_trial_run3 \
+  --dataset.single_task="pick up the cube and place it in the box" \
+  --dataset.num_episodes=1 \
+  --dataset.episode_time_s=10 \
+  --dataset.push_to_hub=false \
+  --display_data=false
+```
+
+### If you want to keep the old dataset
+
+Use a fresh repo name instead. The new name must start with `eval_`, and the
+corresponding local cache directory must not already exist:
+
+```bash
+--dataset.repo_id=wansnap/eval_pick_cube_autonomous_trial_run4
+```
+
+This preserves the existing `eval_pick_cube_autonomous_trial_run3` dataset.
+
+Starting from the original command, the equivalent dataset argument is:
+
+```bash
+--dataset.repo_id=wansnap/eval_pick_cube_autonomous_trial_run4
+```
+
+Keep the verified checkpoint path in the command; do not leave the placeholder
+`/path/to/meaningful/checkpoint/pretrained_model` in place.
+
+Validated working command for policy-driven recording (2026-08-27):
 
 ```bash
 source /home/user/miniconda3/etc/profile.d/conda.sh
 conda activate lerobot
 cd /home/user/hiwonder/lerobot
 lerobot-record \
-  --robot.type=so101_follower --robot.port=/dev/ttyACM1 --robot.id=follower_arm \
+  --robot.type=so101_follower \
+  --robot.port=/dev/ttyACM1 \
+  --robot.id=follower_arm \
+  --robot.max_relative_target=5 \
   --robot.cameras='{
-    "fixed": {"type": "opencv", "index_or_path": "/dev/video0", "width": 640, "height": 480, "fps": 30},
-    "handeye": {"type": "opencv", "index_or_path": "/dev/video2", "width": 640, "height": 480, "fps": 30}
+    "fixed": {"type": "opencv", "index_or_path": "/dev/video0", "width": 640, "height": 480, "fps": 30}, \
+    "handeye": {"type": "opencv", "index_or_path": "/dev/video2", "width": 640, "height": 480, "fps": 30} \
   }' \
-  --teleop.type=so101_leader --teleop.port=/dev/ttyACM0 --teleop.id=leader_arm \
-  --dataset.repo_id=wansnap/pick_cube_test \
+  --policy.path=/home/user/hiwonder/lerobot_checkpoints/pick_cube_test_act_smoke/checkpoints/000010/pretrained_model \
+  --policy.device=cpu \
+  --dataset.repo_id=wansnap/eval_pick_cube_autonomous_trial_run3 \
   --dataset.single_task="pick up the cube and place it in the box" \
-  --dataset.num_episodes=5 \
+  --dataset.num_episodes=1 \
+  --dataset.episode_time_s=10 \
   --dataset.push_to_hub=false \
   --display_data=false
 ```
+
+This command exited successfully with code 0 in the validated SO101 workflow.
+For policy-driven recording, the dataset name must begin with `eval_` and the
+local cache must not already contain that dataset path.
 
 When running from a graphical local session, right arrow ends/saves the current
 episode early, left arrow discards and re-records the current episode, and Esc
@@ -443,7 +514,7 @@ not available. Each episode runs for `dataset.episode_time_s` seconds
 (default `60`), and `Ctrl+C` is the reliable way to stop the command.
 
 Dataset saves by default under
-`~/.cache/huggingface/lerobot/wansnap/pick_cube_test`.
+`~/.cache/huggingface/lerobot/wansnap/pick_cube_autonomous_trial`.
 
 #### Continuing a partial recording
 
@@ -638,6 +709,22 @@ Before starting, place the follower arm in a clear workspace, make the power
 disconnect immediately accessible, and have an operator physically present.
 Start with a single short episode and keep `max_relative_target` conservative:
 
+The original command below failed before recording because
+`wansnap/pick_cube_autonomous_trial` does not begin with `eval_` when a policy
+is supplied. After changing the dataset name, a retry can also fail with
+`FileExistsError` if that dataset's local cache directory already exists.
+
+### Fix 1: remove the stale dataset and retry
+
+Use this when the old directory contains only a failed or disposable run:
+
+```bash
+rm -rf /home/user/.cache/huggingface/lerobot/wansnap/pick_cube_autonomous_trial
+```
+
+Then use the command below with a fresh eval-named dataset. Replace the policy
+placeholder with the real trained checkpoint path before running it:
+
 ```bash
 source /home/user/miniconda3/etc/profile.d/conda.sh
 conda activate lerobot
@@ -654,13 +741,24 @@ lerobot-record \
   }' \
   --policy.path=/path/to/meaningful/checkpoint/pretrained_model \
   --policy.device=cpu \
-  --dataset.repo_id=wansnap/pick_cube_autonomous_trial \
+  --dataset.repo_id=wansnap/eval_pick_cube_autonomous_trial_run3 \
   --dataset.single_task="pick up the cube and place it in the box" \
   --dataset.num_episodes=1 \
   --dataset.episode_time_s=10 \
   --dataset.push_to_hub=false \
   --display_data=false
 ```
+
+### Fix 2: keep the old dataset
+
+Do not delete the old directory. Use a different fresh eval-named repo instead:
+
+```bash
+--dataset.repo_id=wansnap/eval_pick_cube_autonomous_trial_run4
+```
+
+Apply that dataset argument to the same command above. This preserves the old
+dataset while writing the new rollout to a separate local cache directory.
 
 Replace the policy path only with a checkpoint trained beyond the 10-step smoke
 test. Stop immediately with `Ctrl+C` or disconnect arm power if the movement is
