@@ -626,6 +626,47 @@ the 5-episode smoke-test checkpoint for autonomous SO-101 control. Once you
 collect 50+ consistent demonstrations, train a new policy and evaluate it in a
 controlled environment before live deployment.
 
+#### Future supervised autonomous rollout
+
+After training a meaningful policy and validating its checkpoint, use
+`lerobot-record` with `--policy.path` to run one tightly supervised rollout on
+the physical arm. Do not include `--teleop.*` arguments: the policy provides
+the actions. Use a fresh dataset name so autonomous-test data cannot overwrite
+the demonstration dataset.
+
+Before starting, place the follower arm in a clear workspace, make the power
+disconnect immediately accessible, and have an operator physically present.
+Start with a single short episode and keep `max_relative_target` conservative:
+
+```bash
+source /home/user/miniconda3/etc/profile.d/conda.sh
+conda activate lerobot
+cd /home/user/hiwonder/lerobot
+
+lerobot-record \
+  --robot.type=so101_follower \
+  --robot.port=/dev/ttyACM1 \
+  --robot.id=follower_arm \
+  --robot.max_relative_target=5 \
+  --robot.cameras='{
+    "fixed": {"type": "opencv", "index_or_path": "/dev/video0", "width": 640, "height": 480, "fps": 30},
+    "handeye": {"type": "opencv", "index_or_path": "/dev/video2", "width": 640, "height": 480, "fps": 30}
+  }' \
+  --policy.path=/path/to/meaningful/checkpoint/pretrained_model \
+  --policy.device=cpu \
+  --dataset.repo_id=wansnap/pick_cube_autonomous_trial \
+  --dataset.single_task="pick up the cube and place it in the box" \
+  --dataset.num_episodes=1 \
+  --dataset.episode_time_s=10 \
+  --dataset.push_to_hub=false \
+  --display_data=false
+```
+
+Replace the policy path only with a checkpoint trained beyond the 10-step smoke
+test. Stop immediately with `Ctrl+C` or disconnect arm power if the movement is
+unexpected. Inspect the autonomous-trial videos and recorded actions before
+increasing episode duration, motion limits, or the number of rollouts.
+
 ## 9. Integrate with `physicalai` later
 
 This repository already contains an SO-101 runtime backend and can read
