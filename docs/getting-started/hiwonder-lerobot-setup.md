@@ -582,23 +582,13 @@ The dataset folder remains at `~/.cache/huggingface/lerobot/wansnap/pick_cube_te
 and the existing 2 episodes are preserved. After this continuation, the dataset
 will have 5 total episodes.
 
-Status: blocked (2026-08-18). `lerobot-record` failed at robot connect with:
-
-```
-RuntimeError: FeetechMotorsBus motor check failed on port '/dev/ttyACM1':
-Missing motor IDs:
-  - 6 (expected model: 777)
-Full expected motor list (id: model_number): {1: 777, 2: 777, 3: 777, 4: 777, 5: 777, 6: 777}
-Full found motor list (id: model_number): {1: 777, 2: 777, 3: 777, 4: 777, 5: 777}
-```
-
-Servo ID 6 (gripper) on the **follower** arm did not respond, despite working
-during calibration and vision teleoperation minutes earlier.
-
-**Root cause (identified 2026-08-19):** not a servo or servo-cable fault. The
-follower's USB Type-C cable/connection was failing, so the whole motor bus
-was unreliable. See section 10 for the full diagnosis. After fixing the USB
-connection, both arms enumerate cleanly and the motor bus is stable.
+**Historical troubleshooting note (resolved 2026-08-19):** a previous
+`lerobot-record` failure at robot connect showed a missing gripper motor on the
+follower bus. This was not a servo fault. The root cause was a failing USB
+Type-C cable/connection feeding the follower controller, which dropped the whole
+motor bus. After fixing the cable/connection and re-checking the hub/port,
+teleoperation and recording again worked correctly. See section 10 for the full
+diagnosis and the cable/port checklist.
 
 ## 8. Validation, training, and evaluation
 
