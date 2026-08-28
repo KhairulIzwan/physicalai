@@ -536,6 +536,9 @@ full 60 seconds is only the maximum recording time.
 
 Use this only when a trained policy is running the follower arm. The repo name
 must start with `eval_`, and the checkpoint path must be a real local model.
+This is the next step after training: one short, tightly supervised rollout,
+not another training run. Do not provide any `--teleop.*` arguments because the
+policy supplies the actions.
 
 ```bash
 source /home/user/miniconda3/etc/profile.d/conda.sh
@@ -550,7 +553,7 @@ lerobot-record \
     "fixed": {"type": "opencv", "index_or_path": "/dev/video0", "width": 640, "height": 480, "fps": 30}, \
     "handeye": {"type": "opencv", "index_or_path": "/dev/video2", "width": 640, "height": 480, "fps": 30} \
   }' \
-  --policy.path=/home/user/hiwonder/lerobot_checkpoints/pick_cube_test_act_smoke/checkpoints/000010/pretrained_model \
+  --policy.path=/home/user/hiwonder/lerobot_checkpoints/pick_cube_run5_act/checkpoints/002000/pretrained_model \
   --policy.device=cpu \
   --dataset.repo_id=wansnap/eval_pick_cube_autonomous_trial_run3 \
   --dataset.single_task="pick up the cube and place it in the box" \
@@ -560,9 +563,18 @@ lerobot-record \
   --display_data=false
 ```
 
-This command exited successfully with code 0 in the validated SO101 workflow.
-For policy-driven recording, the dataset name must begin with `eval_` and the
-local cache must not already contain that dataset path.
+Before running it:
+
+- Keep the follower arm and workspace clear.
+- Keep the power disconnect immediately accessible and have an operator present.
+- Use one episode only and keep `--robot.max_relative_target=5` conservative.
+- Stop immediately with `Ctrl+C` or disconnect arm power if motion is unexpected.
+
+The rollout creates evaluation data separately from the teleoperation dataset.
+The dataset name must begin with `eval_`, and the local cache must not already
+contain that dataset path. A decreasing training loss and a loadable checkpoint
+do not guarantee successful physical task behavior; inspect the recorded video
+and actions before increasing duration, motion limits, or rollout count.
 
 When running from a graphical local session, right arrow ends/saves the current
 episode early, left arrow discards and re-records the current episode, and Esc
@@ -768,7 +780,35 @@ the demonstration dataset.
 
 Before starting, place the follower arm in a clear workspace, make the power
 disconnect immediately accessible, and have an operator physically present.
-Start with a single short episode and keep `max_relative_target` conservative:
+Start with a single short episode and keep `max_relative_target` conservative.
+Use this complete command with the verified run5 checkpoint:
+
+```bash
+source /home/user/miniconda3/etc/profile.d/conda.sh
+conda activate lerobot
+cd /home/user/hiwonder/lerobot
+lerobot-record \
+  --robot.type=so101_follower \
+  --robot.port=/dev/ttyACM1 \
+  --robot.id=follower_arm \
+  --robot.max_relative_target=5 \
+  --robot.cameras='{ \
+    "fixed": {"type": "opencv", "index_or_path": "/dev/video0", "width": 640, "height": 480, "fps": 30}, \
+    "handeye": {"type": "opencv", "index_or_path": "/dev/video2", "width": 640, "height": 480, "fps": 30} \
+  }' \
+  --policy.path=/home/user/hiwonder/lerobot_checkpoints/pick_cube_run5_act/checkpoints/002000/pretrained_model \
+  --policy.device=cpu \
+  --dataset.repo_id=wansnap/eval_pick_cube_autonomous_trial_run3 \
+  --dataset.single_task="pick up the cube and place it in the box" \
+  --dataset.num_episodes=1 \
+  --dataset.episode_time_s=10 \
+  --dataset.push_to_hub=false \
+  --display_data=false
+```
+
+This command intentionally has no `--teleop.*` options. In a headless
+terminal, type `s` followed by Enter to finish and save early, or `q` followed
+by Enter to stop and discard the unfinished rollout.
 
 The original command below failed before recording because the dataset name and
 mode were mismatched. For teleop collection, the dataset should not begin with
