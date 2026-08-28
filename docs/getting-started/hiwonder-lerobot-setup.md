@@ -617,14 +617,11 @@ diagnosis and the cable/port checklist.
 
 ## 8. Validation, training, and evaluation
 
-Once Step 7 completes with 5 episodes, validate the dataset structure before
-attempting training. The 5-episode smoke test is enough to verify the
-recording pipeline but **not sufficient for a useful policy**. A real policy
-typically requires 50+ diverse episodes. Use this section to validate, train
-on the test data as a proof-of-concept, and evaluate performance on the same
-small dataset. A pretrained policy can sometimes be run without local
-demonstrations, but it must support this robot's action space, camera inputs,
-and task interface.
+After collecting the 50-episode teleoperation dataset, validate its structure
+before training. The verified dataset for this workflow is
+`wansnap/pick_cube_teleop_50ep_run5`. A dataset check confirms file integrity
+and feature compatibility; it does not prove that a policy will complete the
+task successfully. Keep autonomous testing separate and supervised.
 
 ### 8.1 Validate the dataset
 
@@ -635,7 +632,7 @@ cd /home/user/hiwonder/lerobot
 
 python3 -c "
 from lerobot.datasets.lerobot_dataset import LeRobotDataset
-ds = LeRobotDataset('wansnap/pick_cube_test')
+ds = LeRobotDataset('wansnap/pick_cube_teleop_50ep_run5')
 print('Episodes:', ds.num_episodes)
 print('Frames:', ds.num_frames)
 print('Tasks:', ds.meta.info['total_tasks'])
@@ -644,20 +641,20 @@ print('Observation features:', [name.removeprefix('observation.') for name in ds
 "
 ```
 
-Expected output for a successful 5-episode run:
+Expected output for the verified run5 dataset:
 
 ```text
-Episodes: 5
-Frames: ~3500
+Episodes: 50
+Frames: 15938
 Tasks: 1
 Action features: ['shoulder_pan.pos', 'shoulder_lift.pos', 'elbow_flex.pos', 'wrist_flex.pos', 'wrist_roll.pos', 'gripper.pos']
 Observation features: ['state', 'images.fixed', 'images.handeye']
 ```
 
-### 8.2 Train a policy on the smoke-test dataset
+### 8.2 Train an ACT policy on run5
 
-LeRobot supports multiple policy architectures. For a quick proof-of-concept
-with small data, use the `ACT` (Action Chunking Transformer) policy:
+For this SO101 dataset, use the `ACT` (Action Chunking Transformer) policy.
+The following CPU command was completed successfully on this host:
 
 ```bash
 source /home/user/miniconda3/etc/profile.d/conda.sh
@@ -666,26 +663,42 @@ cd /home/user/hiwonder/lerobot
 
 lerobot-train \
   --policy.type=act \
-  --dataset.repo_id=wansnap/pick_cube_test \
-  --output_dir=/home/user/hiwonder/lerobot_checkpoints/pick_cube_test_act_smoke \
-  --steps=10 \
-  --batch_size=2 \
+  --dataset.repo_id=wansnap/pick_cube_teleop_50ep_run5 \
+  --output_dir=/home/user/hiwonder/lerobot_checkpoints/pick_cube_run5_act \
+  --steps=2000 \
+  --batch_size=8 \
   --save_checkpoint=true \
-  --save_freq=5 \
+  --save_freq=500 \
   --policy.device=cpu \
   --policy.push_to_hub=false
 ```
 
-This is a local-only, 10-step smoke test. It does not connect to the robot or
-upload to Hugging Face. It saves checkpoints at steps 5 and 10 to
-`/home/user/hiwonder/lerobot_checkpoints/pick_cube_test_act_smoke`. On this
-host, the test completed successfully on CPU in about 7 minutes.
+This is local-only training: it does not connect to the robot or upload to
+Hugging Face. The verified run produced checkpoints at steps 500, 1000, 1500,
+and 2000. The final checkpoint is
+`/home/user/hiwonder/lerobot_checkpoints/pick_cube_run5_act/checkpoints/002000/pretrained_model`.
+Training completed on CPU with a final logged loss of `1.185`.
 
-**Note:** 5 episodes is far too small for a real policy. This is a validation
-step only. For a functional policy, collect at least 50 diverse episodes and
-use GPU training (`device=cuda:0` if available).
+CPU training is slow. A GPU is recommended for longer training runs or larger
+datasets.
 
-### 8.2.1 Check Pi0/Pi0.5 support
+### 8.3 Verify the trained checkpoint loads
+
+Loading the checkpoint is a no-robot check. It confirms that the model files
+are complete and readable, but it does not measure task success or move the
+follower arm:
+
+```bash
+python3 -c "
+from lerobot.policies.act.modeling_act import ACTPolicy
+checkpoint = '/home/user/hiwonder/lerobot_checkpoints/pick_cube_run5_act/checkpoints/002000/pretrained_model'
+policy = ACTPolicy.from_pretrained(checkpoint)
+print('Loaded policy:', type(policy).__name__)
+print('Device:', next(policy.parameters()).device)
+"
+```
+
+### 8.4 Check Pi0/Pi0.5 support
 
 The installed Hiwonder LeRobot package exposes `pi0` and `pi0fast` policy types,
 but it does not expose a separate `pi05` policy type. Check the installed CLI
@@ -715,12 +728,12 @@ explicitly supports that checkpoint. Do not change `policy.type=act` to
 `policy.type=pi0` without also supplying the Pi0-specific configuration required
 by the package.
 
-### 8.3 Evaluate the trained policy
+### 8.5 Evaluate the trained policy
 
 The installed `lerobot-eval` command evaluates a policy through rollouts in a
 supported environment; it does not calculate success metrics from recorded
-SO-101 episodes. First verify that the saved smoke-test checkpoint can be
-loaded without connecting to the robot:
+SO-101 episodes. The run5 checkpoint was already verified to load without
+connecting to the robot:
 
 ```bash
 source /home/user/miniconda3/etc/profile.d/conda.sh
@@ -729,22 +742,21 @@ cd /home/user/hiwonder/lerobot
 
 python3 -c "
 from lerobot.policies.act.modeling_act import ACTPolicy
-checkpoint = '/home/user/hiwonder/lerobot_checkpoints/pick_cube_test_act_smoke/checkpoints/000010/pretrained_model'
+checkpoint = '/home/user/hiwonder/lerobot_checkpoints/pick_cube_run5_act/checkpoints/002000/pretrained_model'
 policy = ACTPolicy.from_pretrained(checkpoint)
 print('Loaded policy:', type(policy).__name__)
 print('Device:', next(policy.parameters()).device)
 "
 ```
 
-This confirms that the final checkpoint files are complete and readable. It
-does not measure task success and does not control the physical arm.
+This confirms that the final run5 checkpoint files are complete and readable.
+It does not measure task success and does not control the physical arm.
 
 For performance evaluation, configure a supported simulated or hardware-in-the-
 loop environment and run `lerobot-eval --policy.path=<checkpoint> ...` with a
-defined task, reset procedure, safety limits, and an emergency stop. Do not use
-the 5-episode smoke-test checkpoint for autonomous SO-101 control. Once you
-collect 50+ consistent demonstrations, train a new policy and evaluate it in a
-controlled environment before live deployment.
+defined task, reset procedure, safety limits, and an emergency stop. Do not
+treat checkpoint loading or training loss as proof of autonomous task success.
+Evaluate the run5 policy in a controlled environment before live deployment.
 
 #### Future supervised autonomous rollout
 
