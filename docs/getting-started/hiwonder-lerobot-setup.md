@@ -438,12 +438,13 @@ Test parameters chosen on 2026-08-18:
 | `dataset.num_episodes` | 5 |
 | `dataset.push_to_hub` | `false` (local only) |
 
-Validated safety setting and dataset naming for the SO101 follower workflow
-(2026-08-27): `--robot.max_relative_target=5` is a practical default for the
-cube-pick task and was successfully used in a recorded 1-episode validation run
-that exited cleanly with code 0. The safety clamp remains active, so the action
-stream may log warnings when the policy tries to move beyond the configured
-bound; this is expected and does not imply that the run failed.
+Validated dataset naming and motion behavior for the SO101 follower workflow
+(2026-08-28): the clamp-free teleop path was tested successfully with one
+recorded episode. Do not add `--robot.max_relative_target=5` to the normal
+teleop collection command: it can hold a joint away from the leader target and
+produce repeated safety-clamp warnings, especially during larger elbow motion.
+Use the clamp only for a short, supervised safety test when the follower has
+been verified to track correctly without it.
 
 ### Two data-collection modes: teleop vs. autonomous
 
@@ -488,7 +489,6 @@ lerobot-record \
   --robot.type=so101_follower \
   --robot.port=/dev/ttyACM1 \
   --robot.id=follower_arm \
-  --robot.max_relative_target=5 \
   --robot.cameras='{ \
     "fixed": {"type": "opencv", "index_or_path": "/dev/video0", "width": 640, "height": 480, "fps": 30}, \
     "handeye": {"type": "opencv", "index_or_path": "/dev/video2", "width": 640, "height": 480, "fps": 30} \
@@ -496,16 +496,41 @@ lerobot-record \
   --teleop.type=so101_leader \
   --teleop.port=/dev/ttyACM0 \
   --teleop.id=leader_arm \
-  --dataset.repo_id=wansnap/pick_cube_teleop_50ep_run1 \
+  --dataset.repo_id=wansnap/pick_cube_teleop_50ep_run2 \
   --dataset.single_task="pick up the cube and place it in the box" \
   --dataset.num_episodes=50 \
-  --dataset.episode_time_s=10 \
+  --dataset.episode_time_s=60 \
   --dataset.push_to_hub=false \
   --display_data=false
 ```
 
-This is the robust pattern for collecting a larger demonstration set. The repo
-name remains plain, and the run is driven by the leader teleop device.
+This is the validated pattern for collecting a larger demonstration set. The
+repo name remains plain, and the run is driven by the leader teleop device.
+Before starting 50 episodes, perform one short supervised motion check and
+confirm that the follower tracks every joint, including the elbow. Keep the
+follower arm clear because no relative-target clamp is enabled in this command.
+
+In a headless terminal, episode recording is automatic by default, but manual
+controls are also available by typing a command followed by Enter:
+
+- `s`: finish and save the current episode immediately
+- `r`: discard the current episode and rerecord it
+- `q`: discard the unfinished episode and stop recording
+
+**Automatic episode flow**
+
+When no manual command is entered:
+
+1. **Recording:** the episode runs for `dataset.episode_time_s` seconds.
+2. **Saving:** LeRobot saves the completed episode automatically.
+3. **Reset:** the `dataset.reset_time_s` interval begins so you can replace the
+  cube and prepare the arms.
+4. **Next episode:** the following episode starts automatically when the reset
+  interval ends.
+
+In short: **record up to 60 s -> save -> reset 60 s -> record the next episode**.
+Type `s` followed by Enter as soon as the task is complete to save early; the
+full 60 seconds is only the maximum recording time.
 
 ### Correct autonomous rollout command (with policy)
 
