@@ -16,42 +16,39 @@ The tested host layout for this setup is:
 The serial and camera paths are examples. Confirm them again after reconnecting
 USB devices.
 
+Dataset and model naming convention:
+
+- `pick_cube_teleop_50ep_runN`: human teleoperation demonstrations.
+- `pick_cube_runN_act`: ACT checkpoint trained from teleoperation `runN`.
+- `eval_pick_cube_teleop_50ep_runN_trialM`: autonomous evaluation of the
+  model trained from teleoperation `runN`; `trialM` counts only evaluation
+  attempts and does not replace the demonstration dataset.
+
 ## Current setup status
 
 Completed on this host:
 
-- Host checks: two serial devices and four video device nodes detected.
-- Conda installation: Miniforge installed at `/home/user/miniconda3` because
   the configured proxy returned `403 Forbidden` for `repo.anaconda.com`.
   Conda `26.3.2` is installed and `auto_activate_base` is set to `false`.
-- Environment: `lerobot` created with Python 3.11 and FFmpeg 7.1.1.
-- Hiwonder package: LeRobot `0.3.4` installed editable at
   `/home/user/hiwonder/lerobot`.
-- Servo dependency: `feetech-servo-sdk` `1.0.0` installed.
-- Serial permissions: `dialout` group membership granted and confirmed active
   after reboot.
-- Port identification: leader = `/dev/ttyACM0`, follower = `/dev/ttyACM1`
   (confirmed 2026-08-18).
-- Calibration: follower and leader both recalibrated successfully 2026-08-26.
   See sections 6.1 and 6.2 for recorded ranges. The follower required one
   recalibration pass to fix a near-zero gripper range; the leader required a
   fresh pass after invalid encoder-wrap values were observed.
-- Teleoperation without vision: confirmed working 2026-08-18. See section
   6.3.
-- Camera discovery: two cameras identified 2026-08-18 — `/dev/video0` =
   `handeye` (gripper), `/dev/video2` = `fixed` (environment). See section 6.4.
-- Teleoperation with vision: confirmed working 2026-08-18 (arms + cameras
   connected, joint data streaming). The Rerun display window doesn't open
   in this headless session; that's a GUI limitation, not a hardware issue.
-- USB stability: a faulty Type-C cable and a marginal hub port caused
   intermittent device loss and corrupted camera frames on 2026-08-19. Both
   resolved by reseating cables and swapping hub ports. See section 10.
+  15,938 frames, and 100 camera videos. See section 8.
+  loaded successfully as an `ACTPolicy`; see section 8.
 
 Verified working configuration (2026-08-19):
 
 | Device | Serial | Hub port | Role |
 |---|---|---|---|
-| `/dev/ttyACM0` | `5C4C124628` | `5.1` | leader |
 | `/dev/ttyACM1` | `5C82108705` | `5.2` | follower |
 | `/dev/video0` | *(none)* | `5.4` | `handeye` (gripper) |
 | `/dev/video2` | `202404160005` | `5.3` | `fixed` (environment) |
@@ -62,7 +59,9 @@ Current step:
   `loto-status` / contact the tagged user) before running calibration,
   teleoperation, or data collection. Confirmed with the tagged user
   (Izwan) on 2026-08-18.
-- Next: collect a small test dataset (section 7) then train/evaluate (section 8).
+- Current deployment status: seven operator-observed successful pick-and-place
+  evaluations are recorded in section 8.5. Continue supervised operation in the
+  same workspace and retain the videos and outcome labels for every run.
 
 ## 1. Hardware and safety
 
@@ -465,7 +464,7 @@ Use these patterns:
 - Teleop demo collection:
   `wansnap/pick_cube_teleop_50ep_run1`
 - Autonomous policy rollout:
-  `wansnap/eval_pick_cube_autonomous_trial_run3`
+  `wansnap/eval_pick_cube_teleop_50ep_runN_trialM`
 
 If a previous failed run created an empty local dataset directory, move it out
 of the way before recording again. `lerobot-record` creates a new dataset when
@@ -555,7 +554,7 @@ lerobot-record \
   }' \
   --policy.path=/home/user/hiwonder/lerobot_checkpoints/pick_cube_run5_act/checkpoints/002000/pretrained_model \
   --policy.device=cpu \
-  --dataset.repo_id=wansnap/eval_pick_cube_autonomous_trial_run3 \
+  --dataset.repo_id=wansnap/eval_pick_cube_teleop_50ep_run5_trial4 \
   --dataset.single_task="pick up the cube and place it in the box" \
   --dataset.num_episodes=1 \
   --dataset.episode_time_s=10 \
@@ -689,7 +688,9 @@ This is local-only training: it does not connect to the robot or upload to
 Hugging Face. The verified run produced checkpoints at steps 500, 1000, 1500,
 and 2000. The final checkpoint is
 `/home/user/hiwonder/lerobot_checkpoints/pick_cube_run5_act/checkpoints/002000/pretrained_model`.
-Training completed on CPU with a final logged loss of `1.185`.
+Training completed on CPU with a final logged loss of `1.185`, decreasing from
+`6.402` at step 200. The final checkpoint loaded successfully as an
+`ACTPolicy` in the no-robot verification below.
 
 CPU training is slow. A GPU is recommended for longer training runs or larger
 datasets.
@@ -761,27 +762,52 @@ print('Device:', next(policy.parameters()).device)
 "
 ```
 
-This confirms that the final run5 checkpoint files are complete and readable.
-It does not measure task success and does not control the physical arm.
+This check was completed successfully: the final run5 checkpoint files are
+complete and readable as an `ACTPolicy`. It does not measure task success and
+does not control the physical arm.
 
-For performance evaluation, configure a supported simulated or hardware-in-the-
-loop environment and run `lerobot-eval --policy.path=<checkpoint> ...` with a
-defined task, reset procedure, safety limits, and an emergency stop. Do not
-treat checkpoint loading or training loss as proof of autonomous task success.
-Evaluate the run5 policy in a controlled environment before live deployment.
+### Completed physical evaluations
 
-#### Future supervised autonomous rollout
+The final run5 ACT checkpoint completed the fixed pick-and-place task in seven
+operator-observed evaluations on 2026-09-01. Each successful run used the same
+checkpoint, the same cameras and workspace, and
+`--robot.max_relative_target=15`. The operator confirmed that the arm located
+the cube, grasped it, moved to the box, opened the gripper, and released the
+cube.
 
-After training a meaningful policy and validating its checkpoint, use
-`lerobot-record` with `--policy.path` to run one tightly supervised rollout on
-the physical arm. Do not include `--teleop.*` arguments: the policy provides
-the actions. Use a fresh dataset name so autonomous-test data cannot overwrite
-the demonstration dataset.
+| Evaluation | Configured episode time | Recorded frames | Result |
+| --- | ---: | ---: | --- |
+| `trial10` | 60 s | 613 | Successful pick, transfer, and release |
+| `trial13` | 120 s | 601 | Successful repeat of trial 10 |
+| Deployment batch 2, trials 1-5 | 120 s each | 594, 543, 561, 607, 701 | Five successful pick-and-place runs |
 
-Before starting, place the follower arm in a clear workspace, make the power
-disconnect immediately accessible, and have an operator physically present.
-Start with a single short episode and keep `max_relative_target` conservative.
-Use this complete command with the verified run5 checkpoint:
+Deployment batch 2 trial 1 began from the usual manually reset pose and closely
+matched trial 10. For trials 2-5, the operator deliberately did not restore the
+initial arm pose; each run began from the previous run's end pose. All five
+still completed the task. This demonstrates repeatability and recovery across
+those chained start poses within the same trained workspace. It does not
+establish robustness to substantially different cube or box locations,
+lighting, cameras, or tasks.
+
+The saved dataset timestamps and video playback are indexed at the configured
+30 fps, but policy inference on this CPU did not sustain 30 control updates per
+second. Therefore, do not infer wall-clock control rate from `total_frames / 30`.
+The recorded videos and actions are evidence for review, while the configured
+episode time controls the actual recording loop.
+
+The active direct-LeRobot safety setting is
+`--robot.max_relative_target=15`. It caps one target relative to the follower's
+current position, but it does **not** bound cumulative arm travel across many
+commands. Keep an operator present, keep the workspace clear, make power
+disconnect immediately accessible, and save both camera streams for every run.
+The fixed-envelope watchdog experiments were reverted and are not active in the
+current LeRobot or `physicalai` source tree.
+
+### Approved supervised deployment command
+
+Use a fresh `eval_` dataset name for every policy-driven attempt. In a headless
+terminal, global keyboard controls are unavailable; use the terminal only when
+the recorder is waiting for input, and do not leave the robot unattended.
 
 ```bash
 source /home/user/miniconda3/etc/profile.d/conda.sh
@@ -791,24 +817,38 @@ lerobot-record \
   --robot.type=so101_follower \
   --robot.port=/dev/ttyACM1 \
   --robot.id=follower_arm \
-  --robot.max_relative_target=5 \
-  --robot.cameras='{ \
-    "fixed": {"type": "opencv", "index_or_path": "/dev/video0", "width": 640, "height": 480, "fps": 30}, \
-    "handeye": {"type": "opencv", "index_or_path": "/dev/video2", "width": 640, "height": 480, "fps": 30} \
-  }' \
+  --robot.max_relative_target=15 \
+  --robot.cameras='{"fixed": {"type": "opencv", "index_or_path": "/dev/video0", "width": 640, "height": 480, "fps": 30}, "handeye": {"type": "opencv", "index_or_path": "/dev/video2", "width": 640, "height": 480, "fps": 30}}' \
   --policy.path=/home/user/hiwonder/lerobot_checkpoints/pick_cube_run5_act/checkpoints/002000/pretrained_model \
   --policy.device=cpu \
-  --dataset.repo_id=wansnap/eval_pick_cube_autonomous_trial_run3 \
+  --dataset.repo_id=wansnap/eval_pick_cube_run5_deployment_<unique_name> \
   --dataset.single_task="pick up the cube and place it in the box" \
   --dataset.num_episodes=1 \
-  --dataset.episode_time_s=10 \
+  --dataset.episode_time_s=120 \
   --dataset.push_to_hub=false \
   --display_data=false
 ```
 
-This command intentionally has no `--teleop.*` options. In a headless
-terminal, type `s` followed by Enter to finish and save early, or `q` followed
-by Enter to stop and discard the unfinished rollout.
+### Offline checkpoint sanity check
+
+An offline check ran the final ACT checkpoint against the first observation of
+five saved run5 episodes (0, 10, 20, 30, and 40), with no robot or camera
+connection. Its mean absolute action error was `6.360` normalized units. Mean
+per-joint errors were `[1.153, 7.948, 8.020, 8.137, 4.526, 8.376]` for shoulder
+pan, shoulder lift, elbow flex, wrist flex, wrist roll, and gripper. The first
+checked episode had a `32.767`-unit gripper error.
+
+This is a checkpoint sanity check on data used during training, not a measure
+of generalization. The errors show why every physical run should remain
+supervised. The seven successful fixed-workspace evaluations above establish
+current task performance; improve the consistency and volume of demonstrations,
+or retrain with a better validation setup, before claiming robustness beyond
+the conditions represented in run5.
+
+The live hardware evaluations above are the task-performance evidence for this
+checkpoint. Continue recording every deployment attempt, retain visual success
+or failure labels, and use the resulting record when deciding whether added
+demonstrations or retraining are warranted.
 
 The original command below failed before recording because the dataset name and
 mode were mismatched. For teleop collection, the dataset should not begin with
@@ -860,11 +900,11 @@ source .venv/bin/activate
 python -m pip install -e '.[so101,capture]'
 ```
 
-Then validate the runtime with the examples under
-`examples/so101/` before attempting policy deployment. Keep the Hiwonder
-Conda environment and the `physicalai` environment separate until the device
-protocol, joint order, calibration format, and camera observations have been
-confirmed compatible.
+Then validate the runtime with the examples under `examples/so101/` before
+using `physicalai` for policy deployment. Keep the Hiwonder Conda environment
+and the `physicalai` environment separate until the device protocol, joint
+order, calibration format, and camera observations have been confirmed
+compatible.
 
 ## 10. USB troubleshooting (2026-08-19)
 
