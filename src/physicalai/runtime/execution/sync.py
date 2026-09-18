@@ -1,0 +1,119 @@
+# Copyright (C) 2026 Intel Corporation
+# SPDX-License-Identifier: Apache-2.0
+
+"""Synchronous inference execution strategy."""
+
+from __future__ import annotations
+
+import threading
+import time
+from typing import TYPE_CHECKING, Any, cast
+
+from physicalai.config import export_config
+from physicalai.runtime.execution.base import NOT_STARTED, Execution
+
+if TYPE_CHECKING:
+    from physicalai.inference.model import InferenceModel
+    from physicalai.runtime._callback_bus import _CallbackBus
+    from physicalai.runtime.execution.queue import ActionQueue, ChunkedActionQueue
+
+
+@export_config(class_path="physicalai.runtime.SyncExecution")
+class SyncExecution(Execution):
+    """Synchronous inference in the control thread."""
+
+    def __init__(
+        self,
+        *,
+        request_threshold: float = 0.5,
+    ) -> None:
+        """Configure synchronous execution.
+
+        Args:
+            request_threshold: Re-infer when queue drops below this fraction
+                of chunk_size. E.g. 0.5 means re-infer after consuming half
+                the chunk (discards the stale tail). Set to 0.0 to drain
+                the entire chunk before re-inferring.
+        """
+        self._model: InferenceModel | None = None
+        self._queue: ChunkedActionQueue | None = None
+        self._chunk_size: int = 0
+        self._threshold_frac = request_threshold
+        self._threshold_count: int = 0
+        self._inference_count: int = 0
+        self._model_lock = threading.Lock()
+        self._bus: _CallbackBus | None = None
+        self._session_id: str = ""
+
+    def start(self, model: InferenceModel, action_queue: ActionQueue) -> None:
+        """Bind model and queue, and start a fresh inference count for this run."""
+        self._model = model
+        self._queue = cast("ChunkedActionQueue", action_queue)
+        self._inference_count = 0
+
+    def warmup(self, sample_observation: dict[str, Any]) -> None:
+        """Run one inference, seed queue, discover chunk_size.
+
+        Raises:
+            RuntimeError: If start() has not been called.
+        """
+        if self._model is None or self._queue is None:
+            raise RuntimeError(NOT_STARTED)
+        with self._model_lock:
+            actions = self._model.predict_action_chunk(sample_observation)
+            self._chunk_size = actions.shape[0]
+            self._threshold_count = max(1, int(self._chunk_size * self._threshold_frac))
+            self._queue.push_chunk(actions, offset=0)
+
+    def maybe_request(self, observation: dict[str, Any]) -> None:
+        """Refill queue synchronously when below threshold.
+
+        Raises:
+            RuntimeError: If start() has not been called.
+        """
+        if self._model is None or self._queue is None:
+            raise RuntimeError(NOT_STARTED)
+        if self._queue.below_threshold(self._threshold_count):
+            t0 = time.perf_counter()
+            with self._model_lock:
+                actions = self._model.predict_action_chunk(observation)
+                latency = time.perf_counter() - t0
+                self._queue.push_chunk(actions, offset=0)
+            self._inference_count += 1
+            if self._bus:
+                from physicalai.runtime.events import InferenceEvent  # noqa: PLC0415
+
+                self._bus.emit_inference(
+                    InferenceEvent(
+                        session_id=self._session_id,
+                        timestamp=time.time(),
+                        latency_s=latency,
+                        offset=0,
+                        chunk=actions,
+                    )
+                )
+
+    def reset(self, *, reset_model: bool = True) -> None:
+        """Wait for current inference and optionally reset model state.
+
+        Raises:
+            RuntimeError: If :meth:`start` has not been called.
+        """
+        if self._model is None:
+            raise RuntimeError(NOT_STARTED)
+        if reset_model:
+            with self._model_lock:
+                self._model.reset()
+
+    def stop(self) -> None:
+        """No-op for synchronous execution."""
+
+    @property
+    def chunk_size(self) -> int:
+        """Return discovered chunk size."""
+        return self._chunk_size
+
+    @property
+    def inference_count(self) -> int:
+        """Number of completed inference calls."""
+        return self._inference_count

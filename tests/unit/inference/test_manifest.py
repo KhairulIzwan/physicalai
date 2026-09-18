@@ -7,15 +7,18 @@ import json
 from pathlib import Path
 from typing import Any
 
+import numpy as np
 import pytest
 from pydantic import ValidationError
 
+from physicalai.inference.callbacks import Rldx1VtcWindowCallback
 from physicalai.inference.component_factory import (
     ComponentRegistry,
     component_registry,
     instantiate_component,
     resolve_artifact,
 )
+from physicalai.inference.data.features import InferenceFeature, InferenceFeatureDtype, InferenceFeatureType
 from physicalai.inference.manifest import (
     CameraSpec,
     ComponentSpec,
@@ -30,6 +33,7 @@ from physicalai.inference.manifest import (
     TensorSpec,
     _policy_name_from_class_path,
 )
+from physicalai.inference.preprocessors import StatsNormalizer
 from physicalai.inference.runners import SinglePass
 
 
@@ -217,6 +221,52 @@ class TestInstantiateComponent:
         runner = instantiate_component(spec)
         assert isinstance(runner, SinglePass)
 
+    def test_instantiate_concrete_dataclass(self) -> None:
+        spec = ComponentSpec.model_validate({
+            "class_path": "physicalai.inference.data.features.InferenceFeature",
+            "init_args": {"ftype": "STATE", "shape": [3], "name": "state", "dtype": "float32"},
+        })
+
+        feature = instantiate_component(InferenceFeature, spec)
+
+        assert feature == InferenceFeature(
+            ftype=InferenceFeatureType.STATE,
+            shape=(3,),
+            name="state",
+            dtype=InferenceFeatureDtype.FLOAT32,
+        )
+
+    def test_instantiate_rejects_invalid_flat_params(self) -> None:
+        spec = ComponentSpec.model_validate({"type": "single_pass", "": ""})
+        with pytest.raises(TypeError, match='Empty nested key'):
+            instantiate_component(spec)
+
+    def test_instantiate_normalize_with_inline_list_stats(self) -> None:
+        """Exports inline stats as JSON lists (plus feature metadata); these
+        must reach StatsNormalizer, which coerces them to numpy arrays."""
+        from physicalai.inference.preprocessors import StatsNormalizer
+        from physicalai.inference.preprocessors.base import Preprocessor
+
+        spec = ComponentSpec.model_validate({
+            "type": "normalize",
+            "mode": "quantiles",
+            "stats": {
+                "state": {
+                    "q01": [-1.0, -2.0, -3.0],
+                    "q99": [1.0, 2.0, 3.0],
+                    "type": "STATE",
+                    "name": "state",
+                    "shape": [3],
+                },
+            },
+        })
+
+        normalizer = instantiate_component(Preprocessor, spec)
+
+        assert isinstance(normalizer, StatsNormalizer)
+        out = normalizer({"state": np.zeros(3, dtype=np.float32)})
+        np.testing.assert_allclose(out["state"], [0.0, 0.0, 0.0])
+
 
 class TestModelSpec:
     def test_defaults(self) -> None:
@@ -226,6 +276,7 @@ class TestModelSpec:
         assert spec.artifacts == {}
         assert spec.preprocessors == []
         assert spec.postprocessors == []
+        assert spec.callbacks == []
 
     def test_from_dict_full(self) -> None:
         spec = ModelSpec.model_validate({
@@ -238,6 +289,9 @@ class TestModelSpec:
             "postprocessors": [
                 {"class_path": "myapp.transforms.Clamp", "init_args": {"low": -1.0, "high": 1.0}},
             ],
+            "callbacks": [
+                {"type": "rldx1_vtc", "video_length": 3, "video_stride": 2},
+            ],
         })
         assert spec.n_obs_steps == 2
         assert spec.runner is not None
@@ -245,6 +299,9 @@ class TestModelSpec:
         assert spec.artifacts == {"model": "model.onnx"}
         assert len(spec.preprocessors) == 1
         assert len(spec.postprocessors) == 1
+        assert len(spec.callbacks) == 1
+        assert spec.callbacks[0].type == "rldx1_vtc"
+        assert spec.callbacks[0].flat_params == {"video_length": 3, "video_stride": 2}
 
 
 class TestHardwareSpec:
@@ -340,6 +397,7 @@ class TestManifestFromDict:
         assert manifest.model.artifacts == {}
         assert manifest.model.preprocessors == []
         assert manifest.model.postprocessors == []
+        assert manifest.model.callbacks == []
         assert manifest.hardware.robots == []
         assert manifest.hardware.cameras == []
 
@@ -375,6 +433,19 @@ class TestManifestFromDict:
         assert len(manifest.model.postprocessors) == 1
         assert manifest.model.postprocessors[0].class_path == "myapp.transforms.Clamp"
         assert manifest.model.postprocessors[0].init_args == {"low": -1.0, "high": 1.0}
+
+    def test_callback_instantiation_from_registered_name(self) -> None:
+        spec = ComponentSpec.model_validate({
+            "type": "rldx1_vtc",
+            "video_length": 3,
+            "video_stride": 2,
+        })
+
+        callback = instantiate_component(spec)
+
+        assert isinstance(callback, Rldx1VtcWindowCallback)
+        assert callback._video_length == 3
+        assert callback._video_stride == 2
 
     def test_runner_instantiation_from_manifest(self, full_manifest_data: dict[str, Any]) -> None:
         manifest = Manifest.model_validate(full_manifest_data)
@@ -601,11 +672,11 @@ class TestResolveArtifact:
         resolved = resolve_artifact(spec, tmp_path)
         assert resolved.flat_params["artifact"] == str(tmp_path / "stats.safetensors")
 
-    def test_preserves_absolute_type_based_artifact(self, tmp_path: Path) -> None:
+    def test_accepts_absolute_artifact_inside_export_dir(self, tmp_path: Path) -> None:
         absolute = str(tmp_path / "stats.safetensors")
         spec = ComponentSpec.model_validate({"type": "normalize", "artifact": absolute})
         resolved = resolve_artifact(spec, tmp_path)
-        assert resolved.flat_params["artifact"] == absolute
+        assert Path(resolved.flat_params["artifact"]).is_relative_to(tmp_path.resolve())
 
     def test_resolves_relative_class_path_based_artifact(self, tmp_path: Path) -> None:
         spec = ComponentSpec.model_validate({
@@ -615,14 +686,14 @@ class TestResolveArtifact:
         resolved = resolve_artifact(spec, tmp_path)
         assert resolved.init_args["artifact"] == str(tmp_path / "stats.safetensors")
 
-    def test_preserves_absolute_class_path_based_artifact(self, tmp_path: Path) -> None:
+    def test_accepts_absolute_artifact_inside_export_dir_class_path(self, tmp_path: Path) -> None:
         absolute = str(tmp_path / "stats.safetensors")
         spec = ComponentSpec.model_validate({
             "class_path": "physicalai.inference.preprocessors.StatsNormalizer",
             "init_args": {"artifact": absolute},
         })
         resolved = resolve_artifact(spec, tmp_path)
-        assert resolved.init_args["artifact"] == absolute
+        assert Path(resolved.init_args["artifact"]).is_relative_to(tmp_path.resolve())
 
     def test_no_artifact_returns_spec_unchanged(self, tmp_path: Path) -> None:
         spec = ComponentSpec.model_validate({"type": "single_pass"})
@@ -651,3 +722,47 @@ class TestResolveArtifact:
         })
         with pytest.raises(ValueError, match="escapes the export directory"):
             resolve_artifact(spec, tmp_path)
+
+    def test_rejects_absolute_artifact_outside_export_dir(self, tmp_path: Path) -> None:
+        # Regression: absolute paths previously bypassed the containment check entirely.
+        outside = str(tmp_path.parent / "other" / "secret.bin")
+        spec = ComponentSpec.model_validate({"type": "normalize", "artifact": outside})
+        with pytest.raises(ValueError, match="escapes the export directory"):
+            resolve_artifact(spec, tmp_path)
+
+    def test_rejects_absolute_artifact_outside_export_dir_class_path(self, tmp_path: Path) -> None:
+        outside = str(tmp_path.parent / "other" / "secret.bin")
+        spec = ComponentSpec.model_validate({
+            "class_path": "physicalai.inference.preprocessors.StatsNormalizer",
+            "init_args": {"artifact": outside},
+        })
+        with pytest.raises(ValueError, match="escapes the export directory"):
+            resolve_artifact(spec, tmp_path)
+
+    def test_hf_hub_symlink_sibling_files_discoverable(self, tmp_path: Path) -> None:
+        """The resolved artifact path must keep sibling files (e.g. OV .bin) discoverable.
+
+        OpenVINO expects model.bin to live next to model.xml.  If resolve_artifact
+        followed the HF Hub symlink and returned the blob path, OV would look for
+        the .bin inside blobs/ where it does not exist.
+        """
+        blob_xml = tmp_path / "blobs" / "sha256_xml"
+        blob_bin = tmp_path / "blobs" / "sha256_bin"
+        blob_xml.parent.mkdir()
+        blob_xml.write_bytes(b"<xml/>")
+        blob_bin.write_bytes(b"bin-weights")
+
+        snapshot_dir = tmp_path / "snapshot"
+        snapshot_dir.mkdir()
+        (snapshot_dir / "model.xml").symlink_to(Path("../blobs/sha256_xml"))
+        (snapshot_dir / "model.bin").symlink_to(Path("../blobs/sha256_bin"))
+
+        spec = ComponentSpec.model_validate({"type": "normalize", "artifact": "model.xml"})
+        resolved = resolve_artifact(spec, snapshot_dir)
+
+        artifact_path = Path(resolved.flat_params["artifact"])
+        sibling_bin = artifact_path.with_suffix(".bin")
+        assert sibling_bin.exists(), (
+            f"Expected {sibling_bin} to exist next to the artifact, "
+            f"but artifact resolved to {artifact_path}"
+        )

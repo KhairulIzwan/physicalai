@@ -18,6 +18,7 @@ from typing import TYPE_CHECKING, Any, Literal
 
 from physicalai.capture.camera import Camera, ColorMode
 from physicalai.capture.cameras.uvc._camera_setting import CameraSetting  # noqa: PLC2701
+from physicalai.config import export_config
 
 if TYPE_CHECKING:
     from physicalai.capture.cameras.uvc.v4l2 import V4L2Camera
@@ -25,6 +26,7 @@ if TYPE_CHECKING:
     from physicalai.capture.frame import Frame
 
 
+@export_config(class_path="physicalai.capture.UVCCamera")
 class UVCCamera(Camera):
     """Camera facade for UVC devices (USB Video Class).
 
@@ -44,7 +46,7 @@ class UVCCamera(Camera):
     def __init__(
         self,
         *,
-        device: int | str = 0,
+        device: int | str | dict[str, Any] = 0,
         width: int = 640,
         height: int = 480,
         fps: int = 30,
@@ -62,7 +64,10 @@ class UVCCamera(Camera):
         if isinstance(device, int) or (isinstance(device, str) and device.isdecimal()):
             self._device_path: str = f"/dev/video{device}"
         elif isinstance(device, str):
-            self._device_path = device
+            self._device_path: str = device
+        elif isinstance(device, dict):
+            index = device.get("index", "0")
+            self._device_path = f"/dev/video{index}"
         else:
             self._device_path = f"/dev/video{device}"
 
@@ -74,8 +79,10 @@ class UVCCamera(Camera):
             device_path: str
             if isinstance(device, int) or (isinstance(device, str) and device.isdecimal()):
                 device_path = f"/dev/video{device}"
+            elif isinstance(device, dict):
+                device_path = f"/dev/video{device.get('index', '0')}"
             else:
-                device_path = device
+                device_path = str(device)
 
             # Forward V4L2-specific overrides (e.g. num_buffers, pixel_format).
             # The facade's ``device`` maps to V4L2's ``device_path``.

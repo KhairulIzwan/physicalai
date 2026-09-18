@@ -71,7 +71,7 @@ class StatsDenormalizer(Postprocessor):
         features: list[str] | None = None,
         *,
         artifact: str | None = None,
-        stats: dict[str, dict[str, np.ndarray]] | None = None,
+        stats: dict[str, dict[str, Any]] | None = None,
     ) -> None:
         """Initialize with stats file path and denormalization config.
 
@@ -85,7 +85,8 @@ class StatsDenormalizer(Postprocessor):
             artifact: Alias for *stats_path*, used when the path is
                 supplied via manifest ``artifact`` resolution.
             stats: Optional pre-loaded stats dict.  If provided, skips
-                lazy loading from file.
+                lazy loading from file.  Leaf values may be lists, scalars,
+                or numpy arrays; they are coerced to ``np.ndarray``.
 
         Raises:
             ValueError: If *mode* is not a recognized normalization mode
@@ -185,21 +186,23 @@ def _denormalize(
     Returns:
         Denormalized array.
     """
+    transformed = tensor
     if mode == "mean_std":
         mean = stats["mean"]
         std = stats["std"]
-        return tensor * std + mean
+        transformed = tensor * std + mean
 
-    if mode == "min_max":
+    elif mode == "min_max":
         min_val = stats["min"]
         max_val = stats["max"]
-        return (tensor + 1.0) / 2.0 * (max_val - min_val) + min_val
+        transformed = (tensor + 1.0) / 2.0 * (max_val - min_val) + min_val
 
-    if mode == "quantiles":
+    elif mode == "quantiles":
         q01 = stats["q01"]
         q99 = stats["q99"]
         denom = q99 - q01
         denom = np.where(denom == 0, _EPS, denom)
-        return (tensor + 1.0) * denom / 2.0 + q01
+        transformed = (tensor + 1.0) * denom / 2.0 + q01
 
-    return tensor
+    mask = stats.get("mask")
+    return np.where(mask.astype(np.bool_), transformed, tensor) if mask is not None else transformed

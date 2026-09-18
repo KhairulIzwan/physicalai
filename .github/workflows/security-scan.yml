@@ -9,11 +9,9 @@ on:
   push:
     branches:
       - main
-      - releases/**
   pull_request:
     branches:
       - main
-      - releases/**
 
 permissions: {}
 
@@ -26,16 +24,16 @@ jobs:
     steps:
       - &checkout
         name: Checkout code
-        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
 
       - name: Run Zizmor scan
-        uses: open-edge-platform/geti-ci/actions/zizmor@0bed754fc7db24b5f9f15e7ead2eb4acdb0c7263 # zizmor/v0.1.2
+        uses: open-edge-platform/geti-ci/actions/zizmor@27a17d738348699840c32f98edc9947f21278154 # zizmor/v0.1.5
         with:
           scan-scope: ${{ github.event_name == 'pull_request' && 'changed' || 'all' }}
-          severity-level: ${{ github.event_name == 'pull_request' && 'MEDIUM' || 'LOW' }}
-          confidence-level: ${{ github.event_name == 'pull_request' && 'MEDIUM' || 'LOW' }}
+          severity-level: "LOW"
+          confidence-level: "LOW"
           fail-on-findings: ${{ github.event_name == 'pull_request' && 'true' || 'false' }}
 
   bandit-scan:
@@ -47,11 +45,11 @@ jobs:
       - *checkout
 
       - name: Run Bandit scan
-        uses: open-edge-platform/geti-ci/actions/bandit@0bed754fc7db24b5f9f15e7ead2eb4acdb0c7263 # zizmor/v0.1.2
+        uses: open-edge-platform/geti-ci/actions/bandit@b9abdfc0ecbe989816a7f2cf582af771f9abbb87 # bandit/v0.1.3
         with:
           scan-scope: ${{ github.event_name == 'pull_request' && 'changed' || 'all' }}
-          severity-level: ${{ github.event_name == 'pull_request' && 'MEDIUM' || 'LOW' }}
-          confidence-level: ${{ github.event_name == 'pull_request' && 'MEDIUM' || 'LOW' }}
+          severity-level: "LOW"
+          confidence-level: "LOW"
           config_file: ".github/bandit_config.yml"
           fail-on-findings: ${{ github.event_name == 'pull_request' && 'true' || 'false' }}
 
@@ -62,7 +60,7 @@ jobs:
       security-events: write # required to publish sarif
     steps:
       - name: Checkout code
-        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
           fetch-depth: 0
@@ -71,5 +69,5 @@ jobs:
         uses: open-edge-platform/geti-ci/actions/semgrep@940b10164d8c2a6a6e4d786fe1c0aeab74bd629d
         with:
           scan-scope: ${{ github.event_name == 'pull_request' && 'changed' || 'all' }}
-          severity: ${{ github.event_name == 'pull_request' && 'HIGH' || 'LOW' }}
+          severity: "LOW"
           fail-on-findings: ${{ github.event_name == 'pull_request' && 'true' || 'false' }}

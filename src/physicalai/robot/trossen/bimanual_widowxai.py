@@ -23,6 +23,7 @@ from typing import TYPE_CHECKING
 
 import numpy as np
 
+from physicalai.config import export_config
 from physicalai.robot import Robot
 
 if TYPE_CHECKING:
@@ -52,12 +53,11 @@ class BimanualWidowXAIObservation:
 
     @property
     def state(self) -> np.ndarray:
-        """State vector: positions (14) + velocities (14) = (28,)."""
-        if self.sensor_data and "velocities" in self.sensor_data:
-            return np.concatenate([self.joint_positions, self.sensor_data["velocities"]])
+        """State vector: joint positions (14)."""
         return self.joint_positions
 
 
+@export_config(class_path="physicalai.robot.BimanualWidowXAI")
 class BimanualWidowXAI(Robot):
     """Two-arm WidowX AI driver composing a left and right :class:`WidowXAI`.
 
@@ -91,6 +91,11 @@ class BimanualWidowXAI(Robot):
     def role(self) -> str:
         """Robot role (``"leader"`` or ``"follower"``)."""
         return self._left.role
+
+    @property
+    def device_ids(self) -> tuple[str, ...]:
+        """Sorted, deduplicated device ids of both constituent arms."""
+        return tuple(sorted(set(self._left.device_ids) | set(self._right.device_ids)))
 
     @property
     def joint_names(self) -> list[str]:

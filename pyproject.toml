@@ -2,6 +2,14 @@
 requires = ["hatchling", "hatch-vcs"]
 build-backend = "hatchling.build"
 
+[tool.uv.workspace]
+members = ["packages/*"]
+exclude = ["packages/physicalai-lerobot-plugin"]
+
+[tool.uv.sources]
+physicalai = { workspace = true }
+physicalai-studio-plugin = { workspace = true }
+
 [project]
 name = "physicalai"
 dynamic = ["version"]
@@ -22,18 +30,18 @@ dependencies = [
     "loguru>=0.7",
     # target PyTurboJPEG 1.x for libjpeg-turbo 2.x compatibility
     "PyTurboJPEG<2; sys_platform == 'linux'",
-    "pynokhwa==0.1.2",
+    "pynokhwa==0.1.3",
     "pydantic>=2.5",
     "pyyaml>=6.0",
     "opencv-python-headless",
     "huggingface_hub>=0.34,<2.0",
-    "transformers>=5.3.0,<5.4.0",
+    "transformers>=5.15.1,<5.16.0",
     "num2words>=0.5.14,<0.6.0",
     "safetensors>=0.4.3,<1.0.0",
     "onnxruntime",
-    "openvino==2026.1",
-    "openvino_tokenizers>=2026.0",
-    "jsonargparse[signatures,shtab]>=4.36",
+    "openvino>=2026.3.0",
+    "openvino_tokenizers>=2026.3.0.0",
+    "jsonargparse[signatures,shtab]>=4.50,<5",
     "typing-extensions>=4.5",
 ]
 
@@ -45,13 +53,13 @@ pai = "physicalai.cli.main:main"
 tests = ["pytest", "mypy"]
 notebooks = ["matplotlib", "matplotlib-inline", "ipykernel"]
 realsense = [
-    "pyrealsense2; sys_platform != 'darwin'",
+    "pyrealsense2>=2.58.4.10922; sys_platform != 'darwin'",
     "pyrealsense2-macosx; sys_platform == 'darwin'",
 ]
 basler = ["pypylon", "opencv-python-headless"]
 # Pin iceoryx2 exact version and sync with PhysicalAI Studio so
 # publishers and subscribers across processes/venvs can attach to each other.
-transport = ["iceoryx2==0.9.0"]
+transport = ["iceoryx2==0.9.0", "eclipse-zenoh==1.9.0", "msgpack==1.2.1"]
 genicam = []
 capture = [
     "physicalai[realsense]",
@@ -79,6 +87,8 @@ docs = ["mkdocs>=1.6", "mkdocs-material>=9.6"]
 
 [tool.hatch.version]
 source = "vcs"
+tag-pattern = '^v(?P<version>\d+(?:\.\d+)*)$'
+raw-options = { search_parent_directories = true, git_describe_command = "git describe --dirty --tags --long --match v*" }
 
 [tool.hatch.metadata]
 allow-direct-references = true
@@ -104,7 +114,23 @@ include = [
 
 [tool.pyrefly]
 python-version = "3.11"
+search-path = [
+    "src",
+    "packages/physicalai-studio-plugin/src",
+]
+project-includes = [
+    "src",
+    "tests",
+    "packages/physicalai-studio-plugin/src",
+    "packages/physicalai-studio-plugin/tests",
+]
 ignore-missing-imports = ["*"]
+
+[tool.mypy]
+files = ["src", "tests"]
+mypy_path = "src"
+ignore_missing_imports = true
+explicit_package_bases = true
 
 [tool.uv]
 default-groups = ["dev"]
@@ -113,6 +139,7 @@ default-groups = ["dev"]
 target-version = "py311"
 line-length = 120
 preview = true
+include = ["src/**/*.py", "src/**/*.pyi", "packages/**/src/**/*.py", "packages/**/src/**/*.pyi"]
 exclude = [
     ".bzr",
     ".direnv",
@@ -136,7 +163,7 @@ exclude = [
     "notebooks",
 ]
 src = ["src", "tests"]
-extend-exclude = ["docs", "examples", "tests", "notebooks"]
+extend-exclude = ["docs", "examples", "tests", "notebooks", ".github/scripts"]
 
 [tool.ruff.lint]
 select = ["ALL"]
@@ -152,6 +179,7 @@ unfixable = []
 "src/physicalai/cli/*.py" = ["INP001"]
 "src/physicalai/capture/transport/_header.py" = ["RUF012"]
 "src/physicalai/capture/transport/_publisher.py" = ["S603"]
+"src/physicalai/robot/transport/_owner.py" = ["S603"]
 
 [tool.ruff.lint.mccabe]
 max-complexity = 15
@@ -198,15 +226,18 @@ enabled = false
 enabled = false
 
 [tool.pytest.ini_options]
-addopts = ["--strict-markers", "--strict-config", "--showlocals", "-ra"]
+addopts = ["--strict-markers", "--strict-config", "--showlocals", "-ra", "-m", "not ov_smoke"]
 testpaths = "tests"
-pythonpath = "src"
+pythonpath = ["src", "tests/fuzz/harnesses"]
+# Prevent pytest from walking into the fuzz harness tree.
+norecursedirs = ["tests/fuzz"]
 markers = [
     "slow: marks tests as slow (deselect with '-m \"not slow\"')",
     "requires_download: marks tests that require downloading external datasets",
     "integration: marks tests as integration tests",
     "v4l2: marks tests requiring V4L2 mocking (Linux only)",
     "transport: marks tests requiring iceoryx2",
+    "ov_smoke: OpenVINO smoke tests — three-stage contract (load, tokenizer, predict) against published HF exports",
 ]
 
 [tool.coverage.report]
@@ -221,6 +252,9 @@ exclude_lines = [
     "raise ValueError",
     "except ImportError:",
 ]
+
+[tool.coverage.run]
+source = ["src/physicalai"]
 
 [tool.coverage.paths]
 source = ["src"]

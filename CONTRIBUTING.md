@@ -55,9 +55,14 @@ Write clear, concise messages. Reference issue numbers when applicable.
 
 ## Getting Help
 
-- For setup and usage questions, use the GitHub issue form for support requests.
+- For setup and usage questions, use [GitHub Discussions](https://github.com/openvinotoolkit/physicalai/discussions).
 - For security vulnerabilities, follow [SECURITY.md](./SECURITY.md) and do not open a public issue.
 - Participate according to the [Code of Conduct](./CODE_OF_CONDUCT.md).
+
+## Agent and Copilot Guidance
+
+- [AGENTS.md](./AGENTS.md) — canonical, vendor-neutral repo guide for humans and coding agents.
+- [skills/README.md](./skills/README.md) — repo-specific agent skills and authoring rules.
 
 ## Coding Standards
 

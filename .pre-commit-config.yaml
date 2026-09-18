@@ -5,7 +5,7 @@
 
 minimum_prek_version: "0.2.19"
 
-exclude: ^CHANGELOG\.md$
+exclude: (^|/)CHANGELOG\.md$
 
 default_language_version:
   python: python3.12
@@ -17,7 +17,9 @@ repos:
     hooks:
       - id: ruff-check
         args: [--fix, --unsafe-fixes]
+        files: ^(src|packages/[^/]+/src)/
       - id: ruff-format
+        files: ^(src|packages/[^/]+/src)/
 
   - repo: https://github.com/astral-sh/uv-pre-commit
     rev: "0.9.7"
@@ -32,7 +34,7 @@ repos:
         name: pyrefly (type checking)
         entry: pyrefly check
         language: python
-        additional_dependencies: [pyrefly==0.57.1]
+        additional_dependencies: [pyrefly==1.2.0]
         pass_filenames: false
         types: [python]
 
@@ -63,6 +65,21 @@ repos:
     rev: v8.30.1
     hooks:
       - id: gitleaks
+
+  - repo: local
+    hooks:
+      - id: agent-skills-sync
+        name: sync agent skill adapters
+        entry: python3 .github/scripts/skills/agent_skills.py sync
+        language: system
+        pass_filenames: false
+        files: ^skills/
+      - id: agent-skills-validate
+        name: validate agent skills layout
+        entry: python3 .github/scripts/skills/agent_skills.py validate
+        language: system
+        pass_filenames: false
+        files: ^skills/
 
   # ========================================================================== #
   # DOCUMENTATION FORMATTING (root-level docs)                                 #

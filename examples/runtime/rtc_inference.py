@@ -2,7 +2,7 @@
 # Copyright (C) 2026 Intel Corporation
 # SPDX-License-Identifier: Apache-2.0
 
-"""Real-Time Chunking (RTC) inference with PolicyRuntime.
+"""Real-Time Chunking (RTC) inference with RobotRuntime + PolicySource.
 
 Demonstrates how to run a Pi0.5 model with RTC denoising baked into
 the graph. The model produces 50-action chunks; the RTCExecution
@@ -35,16 +35,19 @@ from __future__ import annotations
 
 import argparse
 import signal
+from pathlib import Path
 
 from physicalai.capture import select_cameras_interactive
+from physicalai.config import Config
 from physicalai.inference import InferenceModel
 from physicalai.inference.callbacks import RTCLatencyTracker
 from physicalai.runtime import (
     LowPassFilterCallback,
-    PolicyRuntime,
+    PolicySource,
     RTCActionQueue,
     RTCExecution,
     RerunCallback,
+    RobotRuntime,
 )
 
 from utils import build_robot, parse_camera_specs, prompt_torque_disable
@@ -59,7 +62,7 @@ def main() -> None:
     signal.signal(signal.SIGINT, _handle_sigint)
 
     parser = argparse.ArgumentParser(
-        description="Run Pi0.5 RTC policy with PolicyRuntime",
+        description="Run Pi0.5 RTC policy with RobotRuntime",
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
 
@@ -71,6 +74,15 @@ def main() -> None:
     robot_group.add_argument("--ip", help="Robot IP (widowxai)")
     robot_group.add_argument("--ip-left", help="Left arm IP (bimanual_widowxai)")
     robot_group.add_argument("--ip-right", help="Right arm IP (bimanual_widowxai)")
+    robot_group.add_argument(
+        "--shared-robot",
+        action="store_true",
+        help="Wrap the driver in SharedRobot (Zenoh transport)",
+    )
+    robot_group.add_argument(
+        "--robot-name",
+        help="Logical SharedRobot name (required with --shared-robot)",
+    )
 
     # Model
     model_group = parser.add_argument_group("model")
@@ -80,7 +92,10 @@ def main() -> None:
     # Cameras
     cam_group = parser.add_argument_group("cameras")
     cam_group.add_argument(
-        "--camera", action="append", dest="cameras", metavar="NAME:DRIVER:DEVICE",
+        "--camera",
+        action="append",
+        dest="cameras",
+        metavar="NAME:DRIVER:DEVICE",
         help="Camera as name:driver:device_id (repeatable). Omit for interactive selection.",
     )
     cam_group.add_argument("--cam-width", type=int, default=640, help="Camera width (default: 640)")
@@ -90,9 +105,20 @@ def main() -> None:
     # Runtime
     rt_group = parser.add_argument_group("runtime")
     rt_group.add_argument("--fps", type=float, default=30.0, help="Control loop FPS (default: 30)")
-    rt_group.add_argument("--duration-s", type=float, default=None, help="Run duration in seconds (default: run indefinitely)")
+    rt_group.add_argument(
+        "--duration-s", type=float, default=None, help="Run duration in seconds (default: run indefinitely)"
+    )
     rt_group.add_argument("--task", type=str, default=None, help="Task string for the model (e.g. 'pick up the can')")
-    rt_group.add_argument("--shared-camera", action="store_true", help="Use shared memory cameras (iceoryx2) — faster but incompatible with debugger")
+    rt_group.add_argument(
+        "--shared-camera",
+        action="store_true",
+        help="Use shared memory cameras (iceoryx2) — faster but incompatible with debugger",
+    )
+    rt_group.add_argument(
+        "--export-config",
+        type=Path,
+        help="Save the constructed runtime as YAML and exit before connecting hardware.",
+    )
 
     # RTC parameters
     rtc_group = parser.add_argument_group("rtc")
@@ -101,7 +127,12 @@ def main() -> None:
     rtc_group.add_argument("--max-action-dim", type=int, default=32)
     rtc_group.add_argument("--max-guidance-weight", type=float, default=7.0)
     rtc_group.add_argument("--queue-threshold", type=int, default=30)
-    rtc_group.add_argument("--low-pass-alpha", type=float, default=None, help="Alpha parameter for stateful LowPassFilterCallback. E.g. 0.5. Defaults to None (disabled).")
+    rtc_group.add_argument(
+        "--low-pass-alpha",
+        type=float,
+        default=None,
+        help="Alpha parameter for stateful LowPassFilterCallback. E.g. 0.5. Defaults to None (disabled).",
+    )
 
     # Rerun
     rr_group = parser.add_argument_group("rerun")
@@ -110,28 +141,37 @@ def main() -> None:
     rr_group.add_argument("--rerun-save-path", default="run.rrd")
     rr_group.add_argument("--rerun-no-images", action="store_true", help="Scalars only")
     rr_group.add_argument("--rerun-image-decimation", type=int, default=1, help="Only send 1/N frames to Rerun")
-    rr_group.add_argument("--rerun-jpeg-quality", type=int, default=None, help="JPEG quality for Rerun images (0-100, default: no re-encoding)")
-    rr_group.add_argument("--rerun-image-max-dim", type=int, default=None, help="Max width/height for Rerun images (default: no resizing)")
+    rr_group.add_argument(
+        "--rerun-jpeg-quality",
+        type=int,
+        default=None,
+        help="JPEG quality for Rerun images (0-100, default: no re-encoding)",
+    )
+    rr_group.add_argument(
+        "--rerun-image-max-dim", type=int, default=None, help="Max width/height for Rerun images (default: no resizing)"
+    )
 
     args = parser.parse_args()
 
     # ── Load model ──
     latency_tracker = RTCLatencyTracker(window_size=100)
 
-    print(f"Loading model from {args.model} on {args.device} (this may take a minute)...", flush=True)
     model = InferenceModel(
         args.model,
         device=args.device,
         callbacks=[latency_tracker],
     )
-    print("Model loaded.")
 
     # ── Build robot & cameras ──
     robot = build_robot(args)
     if args.cameras:
-        cameras = parse_camera_specs(args.cameras, args.cam_width, args.cam_height, args.cam_fps, shared=args.shared_camera)
+        cameras = parse_camera_specs(
+            args.cameras, args.cam_width, args.cam_height, args.cam_fps, shared=args.shared_camera
+        )
     else:
-        cameras = select_cameras_interactive(args.cam_width, args.cam_height, args.cam_fps)
+        cameras = select_cameras_interactive(
+            args.cam_width, args.cam_height, args.cam_fps, shared=args.shared_camera,
+        )
 
     # ── RTC queue and execution ──
     rtc_queue = RTCActionQueue()
@@ -150,7 +190,6 @@ def main() -> None:
     if args.rerun != "off":
         callbacks.append(
             RerunCallback(
-                cameras=cameras,
                 image_decimation=args.rerun_image_decimation,
                 log_images=not args.rerun_no_images,
                 image_jpeg_quality=args.rerun_jpeg_quality,
@@ -162,16 +201,24 @@ def main() -> None:
         )
 
     # ── Run ──
-    runtime = PolicyRuntime(
-        robot=robot,
+    policy_source = PolicySource(
         model=model,
         execution=execution,
         action_queue=rtc_queue,
+        task=args.task,
+    )
+    runtime = RobotRuntime(
+        robot=robot,
+        action_source=policy_source,
         cameras=cameras,
         fps=args.fps,
         callbacks=callbacks,
-        task=args.task,
     )
+
+    if args.export_config:
+        Config.from_instance(runtime).save(args.export_config)
+        print(f"Saved runtime config to {args.export_config}")
+        return
 
     with runtime:
         for name, cam in cameras.items():
@@ -179,21 +226,15 @@ def main() -> None:
             h = getattr(cam, "actual_height", None)
             f = getattr(cam, "actual_fps", None)
             print(f"  {name}: {w}x{h} @ {f}fps" if w and h else f"  {name}: connected")
-        print(
-            f"Running RTC — chunk={args.chunk_size}, "
-            f"horizon={args.execution_horizon}, fps={args.fps}"
-        )
+        print(f"Running RTC — chunk={args.chunk_size}, horizon={args.execution_horizon}, fps={args.fps}")
         if args.task:
             print(f"  task: {args.task!r}")
-        stats = runtime.run(duration_s=args.duration_s)
+        steps = runtime.run(duration_s=args.duration_s)
         print(
-            f"\nDone — {stats.steps} steps, {stats.inference_count} inferences, "
-            f"{stats.total_holds} holds"
+            f"\nDone — {steps} steps, {execution.inference_count} inferences, "
+            f"{policy_source.action_queue.total_holds} holds"
         )
-        print(
-            f"Latency — max={latency_tracker.max_latency_s:.3f}s, "
-            f"p95={latency_tracker.percentile_s(95):.3f}s"
-        )
+        print(f"Latency — max={latency_tracker.max_latency_s:.3f}s, p95={latency_tracker.percentile_s(95):.3f}s")
         prompt_torque_disable(robot)
 
 

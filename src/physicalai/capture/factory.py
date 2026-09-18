@@ -5,7 +5,7 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from loguru import logger
 
@@ -14,8 +14,30 @@ from physicalai.capture.camera import CameraType
 if TYPE_CHECKING:
     from physicalai.capture.camera import Camera
 
+_SHARED_TRANSPORT_KEYS = frozenset({
+    "zero_copy",
+    "validate_on_connect",
+    "overwrite_settings",
+    "idle_timeout",
+    "service_name",
+    "color_mode",
+})
 
-def create_camera(camera_type: str, *, shared: bool = False, **kwargs) -> Camera:  # noqa: ANN003
+# CameraType token → public class_path for ``create_camera(..., shared=True)``.
+# Static by necessity: subscriber hosts have no vendor SDK, so nothing here may
+# import a driver. ``genicam`` is still an unimplemented stub, so it's absent.
+# ``ip`` derives its service name from a hash of its URL with credentials
+# stripped (see ``_url_token`` in transport/_spec.py) — never the raw URL.
+# test_factory.py checks values against @export_config.
+_SHAREABLE_CLASS_PATHS: dict[str, str] = {
+    "uvc": "physicalai.capture.UVCCamera",
+    "realsense": "physicalai.capture.RealSenseCamera",
+    "basler": "physicalai.capture.BaslerCamera",
+    "ip": "physicalai.capture.IPCamera",
+}
+
+
+def create_camera(camera_type: str, *, shared: bool = False, **kwargs: Any) -> Camera:  # noqa: ANN401
     """Create a camera by type name.
 
     Args:
@@ -24,21 +46,55 @@ def create_camera(camera_type: str, *, shared: bool = False, **kwargs) -> Camera
             Case-insensitive.
         shared: If True, wrap the camera in a :class:`SharedCamera`
             (iceoryx2 shared-memory transport). Requires the
-            ``transport`` extra.
-        **kwargs: Forwarded to the camera constructor.
+            ``transport`` extra. Only backends with a real shared registry
+            entry (``uvc``, ``realsense``, ``basler``, ``ip``) support
+            derived ``service_name``; stub types must use
+            :meth:`SharedCamera.from_config` with an explicit
+            ``service_name`` once a driver exists.
+        **kwargs: Forwarded to the camera constructor. When *shared* is
+            True, SharedCamera transport knobs (``zero_copy``,
+            ``validate_on_connect``, ``overwrite_settings``,
+            ``idle_timeout``, ``service_name``, ``color_mode``) are peeled
+            off for the subscriber; remaining kwargs become
+            ``camera.init_args``.
 
     Returns:
         A new camera instance.
 
     Raises:
-        ValueError: If *camera_type* is not a recognised name.
+        ValueError: If *camera_type* is not a recognised name, or *shared*
+            is True for a type without shared service-name derivation.
     """
     camera_type = camera_type.lower()
 
     if shared:
         from physicalai.capture.transport import SharedCamera  # noqa: PLC0415
 
-        return SharedCamera(camera_type, **kwargs)
+        class_path = _SHAREABLE_CLASS_PATHS.get(camera_type)
+        if class_path is None:
+            if camera_type in {t.value for t in CameraType}:
+                shareable = ", ".join(sorted(_SHAREABLE_CLASS_PATHS))
+                msg = (
+                    f"camera type {camera_type!r} does not support shared=True "
+                    f"(no shareable driver for service-name derivation); "
+                    f"shareable types: {shareable}. "
+                    "Use SharedCamera.from_config(..., service_name=...) once a "
+                    "driver exists, or create_camera without shared."
+                )
+                raise ValueError(msg)
+            msg = f"Unknown camera type {camera_type!r}. Expected one of: {', '.join(CameraType)}"
+            raise ValueError(msg)
+
+        transport: dict[str, Any] = {}
+        init_args = dict(kwargs)
+        for key in _SHARED_TRANSPORT_KEYS:
+            if key in init_args:
+                transport[key] = init_args.pop(key)
+
+        return SharedCamera(
+            camera={"class_path": class_path, "init_args": init_args},
+            **transport,
+        )
 
     if camera_type == CameraType.UVC:
         from physicalai.capture.cameras.uvc import UVCCamera  # noqa: PLC0415
@@ -76,6 +132,8 @@ def select_cameras_interactive(
     width: int,
     height: int,
     fps: int,
+    *,
+    shared: bool = True,
 ) -> dict[str, Camera]:
     """Discover cameras and let the user pick interactively via stdin.
 
@@ -87,9 +145,10 @@ def select_cameras_interactive(
         width: Requested frame width.
         height: Requested frame height.
         fps: Requested frame rate.
+        shared: Wrap each camera in :class:`SharedCamera` when ``True``.
 
     Returns:
-        Dict mapping user-chosen names to SharedCamera instances.
+        Dict mapping user-chosen names to camera instances.
         Empty dict if no cameras found or none selected.
     """
     from physicalai.capture.discovery import discover_all  # noqa: PLC0415
@@ -139,7 +198,7 @@ def select_cameras_interactive(
             kwargs["serial_number"] = device_id
         else:
             kwargs["device"] = device_id
-        cameras[name] = create_camera(driver, shared=True, **kwargs)
+        cameras[name] = create_camera(driver, shared=shared, **kwargs)
         logger.info("  Added '{}' ({}:{})", name, driver, device_id)
 
     return cameras

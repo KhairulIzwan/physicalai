@@ -9,17 +9,24 @@ flattens and filters them for the runtime adapter.
 
 from physicalai.inference.preprocessors.base import Preprocessor
 from physicalai.inference.preprocessors.hf_tokenizer import HFTokenizer
+from physicalai.inference.preprocessors.joint_frame import JointFramePreprocessor
 from physicalai.inference.preprocessors.lambda_processor import LambdaPreprocessor
+from physicalai.inference.preprocessors.molmoact2 import MolmoAct2ModelInputs, MolmoAct2Preprocessor
 from physicalai.inference.preprocessors.new_line import NewLinePreprocessor
 from physicalai.inference.preprocessors.ov_tokenizer import OVTokenizer
 from physicalai.inference.preprocessors.pi05 import Pi05Preprocessor
 from physicalai.inference.preprocessors.resize import ResizeMode, ResizePreprocessor
+from physicalai.inference.preprocessors.rldx1 import Rldx1Preprocessor, Rldx1RopePreprocessor, Rldx1TokenComposer
 from physicalai.inference.preprocessors.smolvla import ResizeSmolVLA
 from physicalai.inference.preprocessors.stats_normalizer import StatsNormalizer
+from physicalai.inference.preprocessors.to_tensor import ToFloatTensorPreprocessor
 
 __all__ = [
     "HFTokenizer",
+    "JointFramePreprocessor",
     "LambdaPreprocessor",
+    "MolmoAct2ModelInputs",
+    "MolmoAct2Preprocessor",
     "NewLinePreprocessor",
     "OVTokenizer",
     "Pi05Preprocessor",
@@ -27,5 +34,9 @@ __all__ = [
     "ResizeMode",
     "ResizePreprocessor",
     "ResizeSmolVLA",
+    "Rldx1Preprocessor",
+    "Rldx1RopePreprocessor",
+    "Rldx1TokenComposer",
     "StatsNormalizer",
+    "ToFloatTensorPreprocessor",
 ]

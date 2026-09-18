@@ -6,25 +6,28 @@
 from __future__ import annotations
 
 import re
+import time
 from collections import deque
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Self
+from typing import TYPE_CHECKING, Any, Self, cast
 
 import numpy as np
+from loguru import logger
 
+from physicalai.config import export_config
 from physicalai.inference.adapters import adapter_registry, get_adapter
+from physicalai.inference.callbacks.base import Callback
 from physicalai.inference.component_factory import instantiate_component, resolve_artifact
 from physicalai.inference.constants import ACTION
 from physicalai.inference.data.features import InferenceFeature
 from physicalai.inference.manifest import ComponentSpec, Manifest
+from physicalai.inference.postprocessors.base import Postprocessor
+from physicalai.inference.preprocessors.base import Preprocessor
 from physicalai.inference.runners import get_runner
 from physicalai.inference.utils._hub import download_from_hub  # noqa: PLC2701
 
 if TYPE_CHECKING:
     from physicalai.inference.adapters.base import RuntimeAdapter
-    from physicalai.inference.callbacks.base import Callback
-    from physicalai.inference.postprocessors.base import Postprocessor
-    from physicalai.inference.preprocessors.base import Preprocessor
     from physicalai.inference.runners.base import InferenceRunner
 
 
@@ -38,6 +41,7 @@ def _is_safe_policy_name(name: str) -> bool:
     return _SAFE_POLICY_NAME_RE.fullmatch(name) is not None
 
 
+@export_config(class_path="physicalai.inference.InferenceModel", scalar_var_kwargs=True)
 class InferenceModel:
     """Unified inference interface for exported policies.
 
@@ -91,13 +95,19 @@ class InferenceModel:
             postprocessors: Pipeline stages applied to runner output.  If
                 ``None``, loaded from manifest (empty if not declared).
             callbacks: Lifecycle callbacks for instrumentation (timing,
-                logging, safety checks, etc.).  Defaults to no callbacks.
+                logging, safety checks, etc.).  If ``None``, callbacks declared
+                under ``model.callbacks`` are loaded from the manifest.  An
+                explicitly supplied list, including an empty list, takes
+                precedence over manifest callbacks.
             **adapter_kwargs: Backend-specific configuration options
 
         Raises:
             FileNotFoundError: If export directory or required files don't exist.
             ValueError: If ``policy_name`` contains invalid characters.
         """
+        load_started = time.monotonic()
+        logger.info("Loading policy from {}", export_dir)
+
         self.export_dir = Path(export_dir)
         if not self.export_dir.exists():
             msg = f"Export directory not found: {export_dir}"
@@ -123,28 +133,56 @@ class InferenceModel:
             device = self._detect_device()
         self.device = device
 
+        logger.info(
+            "Loaded manifest: policy={}, backend={}, device={}",
+            self.policy_name,
+            self.backend,
+            self.device,
+        )
+
         self.adapter: RuntimeAdapter = get_adapter(self.backend, device=device, **adapter_kwargs)
         model_path = self._get_model_path()
+        compile_started = time.monotonic()
+        logger.info("Compiling {} model on {}...", self.backend, self.device)
         self.adapter.load(model_path)
+        logger.info("Model compiled in {:.1f}s", time.monotonic() - compile_started)
 
         self.runner: InferenceRunner = runner if runner is not None else get_runner(self.manifest)
 
         self.preprocessors: list[Preprocessor] = (
-            preprocessors if preprocessors is not None else self._load_processors(self.manifest.model.preprocessors)
+            preprocessors
+            if preprocessors is not None
+            else self._load_processors(self.manifest.model.preprocessors, Preprocessor)
         )
         self.postprocessors: list[Postprocessor] = (
-            postprocessors if postprocessors is not None else self._load_processors(self.manifest.model.postprocessors)
+            postprocessors
+            if postprocessors is not None
+            else self._load_processors(self.manifest.model.postprocessors, Postprocessor)
         )
-
         self.input_features: list[InferenceFeature] = self._load_features(self.manifest.model.input_features)
         self.output_features: list[InferenceFeature] = self._load_features(self.manifest.model.output_features)
 
-        self.callbacks: list[Callback] = callbacks if callbacks is not None else []
+        self.callbacks: list[Callback] = (
+            callbacks if callbacks is not None else self._load_callbacks(self.manifest.model.callbacks)
+        )
+
+        logger.info(
+            "Loaded {} preprocessors, {} postprocessors, {} callbacks",
+            len(self.preprocessors),
+            len(self.postprocessors),
+            len(self.callbacks),
+        )
 
         for callback in self.callbacks:
             callback.on_load(self)
 
         self._action_buffer: deque[np.ndarray] = deque()
+
+        logger.info(
+            "InferenceModel ready (chunk_size={}, total {:.1f}s)",
+            self.chunk_size,
+            time.monotonic() - load_started,
+        )
 
     @property
     def chunk_size(self) -> int:
@@ -353,6 +391,7 @@ class InferenceModel:
         Raises:
             KeyError: If an expected adapter input is not found in the
                 (flattened) inputs.
+            ValueError: If two inputs expand to the same flattened key.
         """
         expected = self.adapter.input_names
 
@@ -361,8 +400,18 @@ class InferenceModel:
             for key, value in inputs.items():
                 if isinstance(value, dict):
                     for sub_key, sub_value in value.items():
-                        flat_inputs[f"{key}.{sub_key}"] = sub_value
+                        flat_key = f"{key}.{sub_key}"
+                        if flat_key in flat_inputs:
+                            msg = (
+                                f"Key collision in inputs: '{flat_key}' produced by"
+                                f" both a flat key and nested dict '{key}'"
+                            )
+                            raise ValueError(msg)
+                        flat_inputs[flat_key] = sub_value
                 else:
+                    if key in flat_inputs:
+                        msg = f"Key collision in inputs: '{key}' produced by both a nested expansion and a flat key"
+                        raise ValueError(msg)
                     flat_inputs[key] = value
 
             filtered: dict[str, np.ndarray] = {}
@@ -388,7 +437,7 @@ class InferenceModel:
             return Manifest.load(manifest_path)
         return Manifest()
 
-    def _load_processors(self, specs: list[ComponentSpec]) -> list[Any]:
+    def _load_processors(self, specs: list[ComponentSpec], base: type) -> list[Any]:
         """Instantiate preprocessors or postprocessors from component specs.
 
         Resolves relative ``artifact`` paths to absolute paths using
@@ -396,11 +445,35 @@ class InferenceModel:
 
         Args:
             specs: List of component specifications to instantiate.
+            base: Expected processor base class.
 
         Returns:
             List of instantiated processor objects.
         """
-        return [instantiate_component(resolve_artifact(spec, self.export_dir)) for spec in specs]
+        return [instantiate_component(base, resolve_artifact(spec, self.export_dir)) for spec in specs]
+
+    def _load_callbacks(self, specs: list[ComponentSpec]) -> list[Callback]:
+        """Instantiate callbacks declared in a manifest in declaration order.
+
+        Args:
+            specs: Callback component specifications.
+
+        Returns:
+            Instantiated callbacks in declaration order.
+
+        Raises:
+            TypeError: If a callback specification cannot be resolved or
+                instantiated.
+        """
+        callbacks: list[Callback] = []
+        for index, spec in enumerate(specs):
+            try:
+                callback = cast("Callback", instantiate_component(Callback, resolve_artifact(spec, self.export_dir)))
+            except (ImportError, TypeError, ValueError) as exc:
+                msg = f"Invalid manifest callback at index {index}: {exc}"
+                raise TypeError(msg) from exc
+            callbacks.append(callback)
+        return callbacks
 
     def _load_features(self, specs: list[ComponentSpec]) -> list[InferenceFeature]:
         """Instantiate :class:`InferenceFeature` objects from manifest specs.
@@ -418,7 +491,7 @@ class InferenceModel:
         """
         features: list[InferenceFeature] = []
         for spec in specs:
-            component = instantiate_component(resolve_artifact(spec, self.export_dir))
+            component = instantiate_component(InferenceFeature, resolve_artifact(spec, self.export_dir))
             if not isinstance(component, InferenceFeature):
                 msg = f"Expected an InferenceFeature instance from spec, got {type(component).__name__}"
                 raise TypeError(msg)

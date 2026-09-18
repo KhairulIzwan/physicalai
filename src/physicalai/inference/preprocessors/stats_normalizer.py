@@ -70,7 +70,7 @@ class StatsNormalizer(Preprocessor):
         features: list[str] | None = None,
         *,
         artifact: str | None = None,
-        stats: dict[str, dict[str, np.ndarray]] | None = None,
+        stats: dict[str, dict[str, Any]] | None = None,
     ) -> None:
         """Initialize with stats file path and normalization config.
 
@@ -83,7 +83,8 @@ class StatsNormalizer(Preprocessor):
             artifact: Alias for *stats_path*, used when the path is
                 supplied via manifest ``artifact`` resolution.
             stats: Optional pre-loaded stats dict.  If provided, skips
-                lazy loading from file.
+                lazy loading from file.  Leaf values may be lists, scalars,
+                or numpy arrays; they are coerced to ``np.ndarray``.
 
         Raises:
             ValueError: If *mode* is not a recognized normalization mode
@@ -182,23 +183,37 @@ def _normalize(
 
     Returns:
         Normalized array.
+
+    Raises:
+        ValueError: If any stats array contains NaN or Inf.
     """
+    transformed = tensor
     if mode == "mean_std":
         mean = stats["mean"]
         std = stats["std"]
-        return (tensor - mean) / (std + _EPS)
+        if not np.all(np.isfinite(mean)) or not np.all(np.isfinite(std)):
+            msg = "mean_std stats contain NaN or Inf — the model artifact may be corrupted"
+            raise ValueError(msg)
+        transformed = (tensor - mean) / (std + _EPS)
 
-    if mode == "min_max":
+    elif mode == "min_max":
         min_val = stats["min"]
         max_val = stats["max"]
+        if not np.all(np.isfinite(min_val)) or not np.all(np.isfinite(max_val)):
+            msg = "min_max stats contain NaN or Inf — the model artifact may be corrupted"
+            raise ValueError(msg)
         denom = max_val - min_val + _EPS
-        return 2.0 * (tensor - min_val) / denom - 1.0
+        transformed = 2.0 * (tensor - min_val) / denom - 1.0
 
-    if mode == "quantiles":
+    elif mode == "quantiles":
         q01 = stats["q01"]
         q99 = stats["q99"]
+        if not np.all(np.isfinite(q01)) or not np.all(np.isfinite(q99)):
+            msg = "quantiles stats contain NaN or Inf — the model artifact may be corrupted"
+            raise ValueError(msg)
         denom = q99 - q01
         denom = np.where(denom == 0, _EPS, denom)
-        return 2.0 * (tensor - q01) / denom - 1.0
+        transformed = 2.0 * (tensor - q01) / denom - 1.0
 
-    return tensor
+    mask = stats.get("mask")
+    return np.where(mask.astype(np.bool_), transformed, tensor) if mask is not None else transformed

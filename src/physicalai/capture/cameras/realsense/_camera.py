@@ -14,11 +14,13 @@ from physicalai.capture.camera import Camera, ColorMode
 from physicalai.capture.errors import CaptureError, CaptureTimeoutError, NotConnectedError
 from physicalai.capture.frame import Frame
 from physicalai.capture.mixins.depth import DepthMixin
+from physicalai.config import export_config
 
 if TYPE_CHECKING:
     from physicalai.capture.discovery import DeviceInfo
 
 
+@export_config(class_path="physicalai.capture.RealSenseCamera")
 class RealSenseCamera(DepthMixin, Camera):
     """RealSense color and depth camera."""
 
@@ -298,7 +300,7 @@ class RealSenseCamera(DepthMixin, Camera):
         return discover_realsense()
 
     @classmethod
-    def query_formats(cls, device_id: str) -> list[tuple[int, int, int]]:
+    def query_formats(cls, device_id: str | dict) -> list[tuple[int, int, int]]:
         """Query supported color stream formats for a RealSense device.
 
         Args:
@@ -306,14 +308,26 @@ class RealSenseCamera(DepthMixin, Camera):
 
         Returns:
             Sorted list of ``(width, height, fps)`` tuples.
+
+        Raises:
+            ValueError: If the device_id dict does not include a "serial" key.
         """
         rs_any = cast("Any", rs)
         ctx = rs_any.context()
 
+        if isinstance(device_id, dict):
+            serial_value = device_id.get("serial")
+            if not serial_value:
+                msg = 'device_id dict must include a non-empty "serial" key'
+                raise ValueError(msg)
+            serial_number = str(serial_value)
+        else:
+            serial_number = str(device_id)
+
         target_dev = None
         for dev in ctx.query_devices():
             serial = dev.get_info(rs_any.camera_info.serial_number)
-            if serial == str(device_id):
+            if serial == str(serial_number):
                 target_dev = dev
                 break
 

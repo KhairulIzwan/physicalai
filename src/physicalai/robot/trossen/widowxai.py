@@ -42,6 +42,7 @@ except ImportError as e:
     )
     raise ImportError(msg) from e
 
+from physicalai.config import export_config
 from physicalai.robot import Robot
 from physicalai.robot.trossen.constants import HOME_POSITION, VALID_ROLES, WIDOWXAI_JOINT_ORDER
 
@@ -71,12 +72,11 @@ class WidowXAIObservation:
 
     @property
     def state(self) -> np.ndarray:
-        """State vector: positions (7) + velocities (7) = (14,)."""
-        if self.sensor_data and "velocities" in self.sensor_data:
-            return np.concatenate([self.joint_positions, self.sensor_data["velocities"]])
+        """State vector: joint positions (7)."""
         return self.joint_positions
 
 
+@export_config(class_path="physicalai.robot.WidowXAI")
 class WidowXAI(Robot):
     """Driver for the Trossen WidowX AI robot arm (7-DOF).
 
@@ -118,6 +118,11 @@ class WidowXAI(Robot):
     def ip(self) -> str:
         """IP address of the robot arm."""
         return self._ip
+
+    @property
+    def device_ids(self) -> tuple[str, ...]:
+        """Network address identifying this arm, e.g. ``("tcp:192.168.1.2",)``."""
+        return (f"tcp:{self._ip}",)
 
     @property
     def role(self) -> str:

@@ -1,5 +1,6 @@
 # Copyright (C) 2025-2026 Intel Corporation
 # SPDX-License-Identifier: Apache-2.0
+# ruff: noqa: ARG005, D100, D101, D102, E741, F401, I001, PLC2701, PLR2004, PLR6301, S101, SLF001, TC002, TC003
 
 from __future__ import annotations
 
@@ -13,8 +14,9 @@ import numpy as np
 import pytest
 
 from physicalai.runtime._callback_bus import _CallbackBus
-from physicalai.runtime._telemetry import TelemetryEmitter, _decode_numpy, _encode_numpy
-from physicalai.runtime.callbacks import AsyncCallback, ConsoleCallback, JsonlCallback
+from physicalai.runtime import AsyncCallback, ConsoleCallback, JsonlCallback
+from physicalai.runtime.observer._codec import decode_numpy, encode_numpy
+from physicalai.runtime.observer._telemetry import TelemetryEmitter
 from physicalai.runtime.events import InferenceEvent, LifecycleEvent, TickEvent
 from tests.unit.runtime.conftest import FakeRobotObservation
 
@@ -22,7 +24,7 @@ from tests.unit.runtime.conftest import FakeRobotObservation
 class TestNumpyEncoding:
     def test_encode_numpy_float32(self) -> None:
         arr = np.array([[1.0, 2.0], [3.0, 4.0]], dtype=np.float32)
-        encoded = _encode_numpy(arr)
+        encoded = encode_numpy(arr)
         assert encoded["__np__"] is True
         assert encoded["dtype"] == "float32"
         assert encoded["shape"] == [2, 2]
@@ -30,13 +32,13 @@ class TestNumpyEncoding:
 
     def test_encode_preserves_shape(self) -> None:
         arr = np.zeros((3, 4, 5), dtype=np.float64)
-        encoded = _encode_numpy(arr)
+        encoded = encode_numpy(arr)
         assert encoded["shape"] == [3, 4, 5]
         assert encoded["dtype"] == "float64"
 
     def test_roundtrip(self) -> None:
         arr = np.array([1.5, 2.5, 3.5], dtype=np.float32)
-        decoded = _decode_numpy(_encode_numpy(arr))
+        decoded = decode_numpy(encode_numpy(arr))
         np.testing.assert_array_equal(arr, decoded)
 
 
@@ -64,7 +66,6 @@ class TestTelemetryEmitterNoOp:
             timestamp=0.0,
             joint_positions=None,
             action_sent=None,
-            queue_remaining=0,
             loop_duration_s=0.033,
             sleep_time_s=0.001,
         )
@@ -92,7 +93,6 @@ class TestTelemetryEmitterWithMock:
             timestamp=1.0,
             joint_positions=np.zeros(3),
             action_sent=np.ones(3),
-            queue_remaining=5,
             loop_duration_s=0.033,
             sleep_time_s=0.001,
         )
@@ -127,10 +127,9 @@ class TestCallbackBus:
             session_id="test",
             step=step,
             timestamp=0.0,
-            robot_observation=FakeRobotObservation(joint_positions=np.zeros(3)),
+            robot_state=FakeRobotObservation(joint_positions=np.zeros(3)),
             camera_frames={},
             action_sent=np.zeros(3),
-            queue_remaining=5,
             loop_duration_s=0.03,
             sleep_time_s=0.003,
             stale_obs=False,
@@ -176,26 +175,20 @@ class TestCallbackBus:
         bus.emit_tick(self._make_tick_event())
         cb.on_inference.assert_called_once_with(event)
 
-    def test_invoke_before_send_action_chains(self) -> None:
+    def test_invoke_on_action_ready_chains(self) -> None:
         cb1 = MagicMock()
-        cb1.before_send_action.return_value = np.ones(3)
+        cb1.on_action_ready.return_value = np.ones(3)
         cb2 = MagicMock()
-        cb2.before_send_action.return_value = None
+        cb2.on_action_ready.side_effect = lambda *, action, step: action
 
         bus = _CallbackBus([cb1, cb2])
         original = np.zeros(3)
-        result = bus.invoke_before_send_action(action=original, step=0)
+        result = bus.invoke_on_action_ready(action=original, step=0)
 
         np.testing.assert_array_equal(result, np.ones(3))
-        cb2.before_send_action.assert_called_once()
-        passed = cb2.before_send_action.call_args[1]["action"]
+        cb2.on_action_ready.assert_called_once()
+        passed = cb2.on_action_ready.call_args[1]["action"]
         np.testing.assert_array_equal(passed, np.ones(3))
-
-    def test_invoke_on_hold_dispatches(self) -> None:
-        cb = MagicMock()
-        bus = _CallbackBus([cb])
-        bus.invoke_on_hold(step=5, holds=3)
-        cb.on_hold.assert_called_once_with(step=5, holds=3)
 
     def test_callback_exception_isolated(self) -> None:
         bad_cb = MagicMock()
@@ -205,10 +198,62 @@ class TestCallbackBus:
         bus.emit_tick(self._make_tick_event())
         good_cb.on_tick.assert_called_once()
 
+    def test_invoke_on_action_ready_propagates_exception(self) -> None:
+        bad_cb = MagicMock()
+        bad_cb.on_action_ready.side_effect = RuntimeError("oops")
+        good_cb = MagicMock()
+
+        bus = _CallbackBus([bad_cb, good_cb])
+        with pytest.raises(RuntimeError, match="oops"):
+            bus.invoke_on_action_ready(action=np.zeros(3), step=0)
+
+        good_cb.on_action_ready.assert_not_called()
+
     def test_close_calls_close_on_callbacks(self) -> None:
         cb = MagicMock()
         bus = _CallbackBus([cb])
         bus.close()
+        cb.close.assert_called_once()
+
+    def test_close_is_idempotent(self) -> None:
+        cb = MagicMock()
+        bus = _CallbackBus([cb])
+
+        bus.close()
+        bus.close()
+
+        cb.close.assert_called_once()
+
+    def test_close_attempts_all_callbacks_before_propagating_base_exception(self) -> None:
+        interrupted = MagicMock()
+        interrupted.close.side_effect = KeyboardInterrupt
+        remaining = MagicMock()
+        bus = _CallbackBus([interrupted, remaining])
+
+        with pytest.raises(KeyboardInterrupt):
+            bus.close()
+
+        remaining.close.assert_called_once()
+
+    def test_concurrent_close_calls_callbacks_once(self) -> None:
+        entered = threading.Event()
+        release = threading.Event()
+        cb = MagicMock()
+
+        def close() -> None:
+            entered.set()
+            assert release.wait(timeout=5.0)
+
+        cb.close.side_effect = close
+        bus = _CallbackBus([cb])
+        threads = [threading.Thread(target=bus.close) for _ in range(2)]
+        for thread in threads:
+            thread.start()
+        assert entered.wait(timeout=5.0)
+        release.set()
+        for thread in threads:
+            thread.join(timeout=5.0)
+
         cb.close.assert_called_once()
 
     def test_missing_methods_skipped(self) -> None:
@@ -218,7 +263,6 @@ class TestCallbackBus:
         bus = _CallbackBus([MinimalCallback()])
         bus.emit_tick(self._make_tick_event())
         bus.emit_lifecycle(self._make_lifecycle_event())
-        bus.invoke_on_hold(step=0, holds=1)
 
 
 class TestConsoleCallback:
@@ -230,10 +274,9 @@ class TestConsoleCallback:
                     session_id="t",
                     step=i,
                     timestamp=0.0,
-                    robot_observation=FakeRobotObservation(joint_positions=np.zeros(3)),
+                    robot_state=FakeRobotObservation(joint_positions=np.zeros(3)),
                     camera_frames={},
                     action_sent=np.zeros(3),
-                    queue_remaining=5,
                     loop_duration_s=0.03,
                     sleep_time_s=0.003,
                     stale_obs=False,
@@ -254,12 +297,9 @@ class TestJsonlCallback:
                 session_id="s1",
                 step=0,
                 timestamp=1.0,
-                robot_observation=FakeRobotObservation(
-                    joint_positions=np.array([0.1, 0.2]),
-                ),
+                robot_state=FakeRobotObservation(joint_positions=np.array([0.1, 0.2])),
                 camera_frames={},
                 action_sent=np.array([0.3, 0.4]),
-                queue_remaining=5,
                 loop_duration_s=0.03,
                 sleep_time_s=0.003,
                 stale_obs=False,
@@ -302,4 +342,16 @@ class TestAsyncCallback:
         cb = AsyncCallback(inner)
         cb.close()
         assert not cb._thread.is_alive()
+        inner.close.assert_called_once()
+
+    def test_concurrent_close_closes_inner_once(self) -> None:
+        inner = MagicMock(spec=["close"])
+        cb = AsyncCallback(inner)
+        threads = [threading.Thread(target=cb.close) for _ in range(2)]
+
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join(timeout=5.0)
+
         inner.close.assert_called_once()
