@@ -15,6 +15,7 @@ from unittest.mock import MagicMock, Mock, patch
 
 import numpy as np
 import pytest
+from loguru import logger
 
 from physicalai.inference.adapters import (
     ONNXAdapter,
@@ -99,6 +100,73 @@ class TestOpenVINOAdapter:
         with patch.dict("sys.modules", {"openvino": None}):
             with pytest.raises(ImportError, match="OpenVINO is not installed"):
                 adapter.load(model_path)
+
+    @pytest.mark.parametrize(
+        ("machine", "device", "kwargs", "expected"),
+        [
+            pytest.param("arm64", "CPU", {}, {"INFERENCE_PRECISION_HINT": "f32"}, id="macos-arm-cpu"),
+            pytest.param("aarch64", "cpu", {}, {"INFERENCE_PRECISION_HINT": "f32"}, id="linux-arm-cpu"),
+            pytest.param(
+                "arm64",
+                "CPU",
+                {"INFERENCE_PRECISION_HINT": "f16"},
+                {"INFERENCE_PRECISION_HINT": "f16"},
+                id="caller-hint-wins",
+            ),
+            pytest.param(
+                "arm64",
+                "CPU",
+                {"PERFORMANCE_HINT": "LATENCY"},
+                {"PERFORMANCE_HINT": "LATENCY", "INFERENCE_PRECISION_HINT": "f32"},
+                id="other-options-kept",
+            ),
+            pytest.param("arm64", "AUTO", {}, {}, id="arm-auto-untouched"),
+            pytest.param("arm64", "GPU", {}, {}, id="arm-gpu-untouched"),
+            pytest.param("x86_64", "CPU", {}, {}, id="x86-cpu-untouched"),
+            pytest.param("AMD64", "CPU", {}, {}, id="windows-x86-cpu-untouched"),
+        ],
+    )
+    def test_compile_config_precision_default(
+        self,
+        tmp_path: Path,
+        machine: str,
+        device: str,
+        kwargs: dict[str, str],
+        expected: dict[str, str],
+    ) -> None:
+        """ARM CPU defaults to f32 precision; everything else is passed through unchanged."""
+        model_path = tmp_path / "model.xml"
+        model_path.touch()
+        mock_ov = MagicMock()
+
+        with (
+            patch.dict("sys.modules", {"openvino": mock_ov}),
+            patch("physicalai.inference.adapters.openvino.platform.machine", return_value=machine),
+        ):
+            adapter = OpenVINOAdapter(device=device, **kwargs)
+            adapter.load(model_path)
+
+        compile_model = mock_ov.Core.return_value.compile_model
+        assert compile_model.call_args.kwargs["config"] == expected
+        assert adapter.config == kwargs  # caller's config is not mutated
+
+    def test_arm_f32_default_logged_once(self, tmp_path: Path) -> None:
+        """The ARM f32 default is logged once per process, not on every load."""
+        model_path = tmp_path / "model.xml"
+        model_path.touch()
+        messages: list[str] = []
+        handler_id = logger.add(lambda m: messages.append(m.record["message"]), level="INFO")
+        try:
+            with (
+                patch.dict("sys.modules", {"openvino": MagicMock()}),
+                patch("physicalai.inference.adapters.openvino.platform.machine", return_value="arm64"),
+                patch("physicalai.inference.adapters.openvino._logged_arm_f32", new=False),
+            ):
+                for _ in range(2):
+                    OpenVINOAdapter(device="CPU").load(model_path)
+        finally:
+            logger.remove(handler_id)
+        assert sum("f32 inference precision on ARM CPU" in m for m in messages) == 1
 
 
 class TestONNXAdapter:

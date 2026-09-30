@@ -34,7 +34,7 @@ Physical AI Runtime provides the deployment-side components for running trained 
 ---
 
 <p align="center">
-  <img src="https://raw.githubusercontent.com/openvinotoolkit/physicalai/main/docs/assets/inference_rerun.webp" alt="Inference demo" width="100%">
+  <img src="https://github.com/user-attachments/assets/0dd0b431-2b7a-4002-b45a-a18e79d113ff" alt="Inference demo" width="100%">
 </p>
 
 ## Installation
@@ -50,6 +50,15 @@ pip install physicalai[realsense]   # Intel RealSense cameras
 pip install physicalai[basler]      # Basler industrial cameras
 pip install physicalai[so101]       # SO-101 robot arm
 pip install physicalai[trossen]     # Trossen WidowX robots
+```
+
+With first-party plugins (Python 3.12+):
+
+```bash
+pip install "physicalai[plugin-mujoco-so101]"    # simulated SO-101 (MuJoCo)
+pip install "physicalai[plugin-bimanual-so101]"  # bimanual SO-101
+pip install "physicalai[plugin-rebot-b601]"      # Seeed reBot B601
+pip install "physicalai[plugin-stararm]"         # Fashion Star Arm 102
 ```
 
 ---
@@ -157,6 +166,18 @@ uvc_devices = UVCCamera.discover()
 ## Robot API
 
 Robots implement a Protocol-based interface. Any class with `connect()`, `disconnect()`, `get_observation()`, `send_action()`, and `joint_names` works — no inheritance required.
+
+More robots ship as first-party plugins. Each plugin README covers setup and usage. Install them with the `plugin-*` extras (see [Installation](#installation)); the LeRobot plugin is installed manually with `pip install physicalai-lerobot-plugin`.
+
+| Plugin                                                                 | Robots                                                                             |
+| ---------------------------------------------------------------------- | ---------------------------------------------------------------------------------- |
+| [MuJoCo SO-101](packages/physicalai-mujoco-so101-plugin/README.md)     | Simulated single-arm and bimanual SO-101, with a browser viewer and camera streams |
+| [Bimanual SO-101](packages/physicalai-bimanual-so101-plugin/README.md) | Two SO-101 arms as one robot (follower and leader)                                 |
+| [reBot B601](packages/physicalai-rebot-b601-plugin/README.md)          | Seeed reBot B601-DM / B601-RS followers                                            |
+| [Star Arm](packages/physicalai-stararm-plugin/README.md)               | Fashion Star Arm 102 leaders and a follower                                        |
+| [LeRobot](packages/physicalai-lerobot-plugin/README.md)                | Robots and teleoperators from LeRobot configs                                      |
+
+To add your own robot to Physical AI Studio, see the [Studio plugin](packages/physicalai-studio-plugin/README.md).
 
 ```python
 from physicalai.robot import SO101

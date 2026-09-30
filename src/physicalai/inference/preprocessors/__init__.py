@@ -8,6 +8,7 @@ flattens and filters them for the runtime adapter.
 """
 
 from physicalai.inference.preprocessors.base import Preprocessor
+from physicalai.inference.preprocessors.enums import ImageLayout
 from physicalai.inference.preprocessors.hf_tokenizer import HFTokenizer
 from physicalai.inference.preprocessors.joint_frame import JointFramePreprocessor
 from physicalai.inference.preprocessors.lambda_processor import LambdaPreprocessor
@@ -20,9 +21,11 @@ from physicalai.inference.preprocessors.rldx1 import Rldx1Preprocessor, Rldx1Rop
 from physicalai.inference.preprocessors.smolvla import ResizeSmolVLA
 from physicalai.inference.preprocessors.stats_normalizer import StatsNormalizer
 from physicalai.inference.preprocessors.to_tensor import ToFloatTensorPreprocessor
+from physicalai.inference.preprocessors.xr0 import XR0Preprocessor
 
 __all__ = [
     "HFTokenizer",
+    "ImageLayout",
     "JointFramePreprocessor",
     "LambdaPreprocessor",
     "MolmoAct2ModelInputs",
@@ -39,4 +42,5 @@ __all__ = [
     "Rldx1TokenComposer",
     "StatsNormalizer",
     "ToFloatTensorPreprocessor",
+    "XR0Preprocessor",
 ]

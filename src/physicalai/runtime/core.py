@@ -13,6 +13,8 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal, Protocol, Self
 
+import numpy as np
+
 from physicalai.capture.errors import CaptureError
 from physicalai.config import export_config
 from physicalai.runtime._callback_bus import _CallbackBus  # noqa: PLC2701
@@ -22,8 +24,6 @@ from physicalai.runtime.execution.base import WorkerDiedError
 if TYPE_CHECKING:
     from collections.abc import Iterator, Mapping, Sequence
     from typing import Any
-
-    import numpy as np
 
     from physicalai.capture.camera import Camera
     from physicalai.capture.frame import Frame
@@ -37,6 +37,8 @@ _MAX_OBS_RETRIES = 3
 _MAX_SEND_RETRIES = 2
 _RETRY_BACKOFF_S = 0.001
 _GOAL_TIME_TICKS = 3
+_RETURN_DURATION_S = 2.5
+_RETURN_MAX_TRACKING_ERROR = 0.15
 
 RunReason = Literal["stop_requested", "duration_elapsed", "interrupted", "error"]
 """Why a :meth:`RobotRuntime.run` call ended."""
@@ -158,6 +160,7 @@ class RobotRuntime:
         # between connect() and run() and the session would never end.
         self._stop = threading.Event()
         self._last_run_reason: RunReason | None = None
+        self._initial_state: RobotObservation | None = None
 
     @property
     def robot(self) -> Robot:
@@ -325,7 +328,13 @@ class RobotRuntime:
         """
         self._stop.set()
 
-    def run(self, *, duration_s: float | None = None, stop_event: StopSignal | None = None) -> int:
+    def run(
+        self,
+        *,
+        duration_s: float | None = None,
+        stop_event: StopSignal | None = None,
+        return_to_initial_state: bool = False,
+    ) -> int:
         """Run the control loop.
 
         Exits on the first of: a stop request (:meth:`stop` or *stop_event*),
@@ -337,6 +346,10 @@ class RobotRuntime:
             stop_event: External stop flag polled once per tick, honoured in
                 addition to :meth:`stop`. Any object with ``is_set()`` works,
                 ``multiprocessing.Event`` included — see :class:`StopSignal`.
+            return_to_initial_state: Interpolate the robot back to the pose read
+                at the start of the run during shutdown, instead of leaving it
+                wherever the last action put it. Best-effort — a failure only
+                logs and shutdown still completes.
 
         Returns:
             Number of steps completed this run.
@@ -374,6 +387,7 @@ class RobotRuntime:
                         },
                     )
                 )
+                self._initial_state, _ = self._read_robot_resilient()
 
                 while True:
                     if self._stop.is_set() or (stop_event is not None and stop_event.is_set()):
@@ -424,7 +438,7 @@ class RobotRuntime:
                 logger.exception("Worker died during runtime")
                 raise
             finally:
-                self._shutdown(step, reason=reason)
+                self._shutdown(step, reason=reason, return_to_initial_state=return_to_initial_state)
 
         return step
 
@@ -470,6 +484,7 @@ class RobotRuntime:
         self._transient_errors = 0
         self._last_tick_stale = False
         self._last_run_reason = None
+        self._initial_state = None
 
     @staticmethod
     def _tick_sleep(loop_start: float, goal_time: float) -> tuple[float, float]:
@@ -645,10 +660,60 @@ class RobotRuntime:
             # A Ctrl+C in on_lifecycle must not lose buffered telemetry.
             self._bus.flush()
 
-    def _shutdown(self, step: int, *, reason: RunReason) -> None:
+    def _return_to_initial_state(self) -> None:
+        """Interpolate the robot back to the pose captured at the start of the run.
+
+        After every step the measured pose is checked against the command. If any
+        joint lags by more than ``_RETURN_MAX_TRACKING_ERROR`` of the largest joint
+        travel (e.g. a self-collision), the move aborts and the robot is told to
+        hold its measured pose so the servos stop pushing.
+
+        Best-effort: any failure leaves the robot at an arbitrary pose and only
+        logs, so shutdown always completes.
+        """
+        if self._initial_state is None:
+            logger.warning("No initial state captured — skipping return to initial position")
+            return
+
+        target = self._initial_state.joint_positions
+        steps = max(int(_RETURN_DURATION_S * self._fps), 1)
+        goal_time = _RETURN_DURATION_S / steps
+        try:
+            current = self._robot.get_observation().joint_positions
+            travel = float(np.max(np.abs(target - current)))
+            logger.info("Returning robot to initial position over %.1fs", _RETURN_DURATION_S)
+            for i in range(1, steps + 1):
+                loop_start = time.perf_counter()
+                t = i / steps
+                command = current * (1.0 - t) + target * t
+                self._robot.send_action(command, goal_time=goal_time)
+                self._tick_sleep(loop_start, goal_time)
+
+                measured = self._robot.get_observation().joint_positions
+                error = np.abs(measured - command) / travel
+                worst = int(np.argmax(error))
+                if error[worst] > _RETURN_MAX_TRACKING_ERROR:
+                    logger.warning(
+                        "Aborting return to initial position at step %d/%d: joint '%s' is off by %.0f%% "
+                        "of the move (possible collision); holding current pose",
+                        i,
+                        steps,
+                        self._robot.joint_names[worst],
+                        error[worst] * 100,
+                    )
+                    self._robot.send_action(measured, goal_time=self._goal_time)
+                    return
+        except Exception:
+            logger.warning("Could not return robot to initial position", exc_info=True)
+
+    def _shutdown(self, step: int, *, reason: RunReason, return_to_initial_state: bool = False) -> None:
         self._last_run_reason = reason
         try:
+            # Release the action source first so nothing else is driving the
+            # robot while the return move runs.
             self._disconnect_and_log_errors()
+            if return_to_initial_state:
+                self._return_to_initial_state()
         finally:
             try:
                 self._emit_shutdown(step, reason=reason)
